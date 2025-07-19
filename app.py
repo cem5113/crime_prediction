@@ -43,17 +43,22 @@ def load_predictions():
 
 @st.cache_data(ttl=3600)
 def load_predictions():
+    import gdown
+    import os
+
     file_id = "1Y8v2fo8w85N5ldSQcqoN1LZvGlfqQOHb"
     url = f"https://drive.google.com/uc?id={file_id}"
+    output = "/tmp/sf_crime_11.csv"
+
     try:
-        df = pd.read_csv(url, on_bad_lines='skip')
-        st.write("✅ Yüklendi: sf_crime_11.csv")
+        gdown.download(url, output, quiet=False)
+        df = pd.read_csv(output)
+        st.success("✅ Yüklendi: sf_crime_11.csv")
         st.write(df.head())
         return df
     except Exception as e:
-        st.error(f"❌ Tahmin verisi yüklenemedi. Hata: {e}")
+        st.error(f"❌ CSV okunamadı: {e}")
         return pd.DataFrame()
-
 # === LOAD ===
 pred_df = load_predictions()
 
