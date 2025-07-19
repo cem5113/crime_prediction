@@ -43,9 +43,7 @@ def load_predictions():
 @st.cache_data(ttl=3600)
 def load_geodata():
     url = "https://raw.githubusercontent.com/cem5113/crime_prediction/main/sf_blockgroup.geojson"
-    output = "/tmp/sf_blocks.geojson"
-    gdown.download(url, output, quiet=False)
-    return gpd.read_file(output)
+    return gpd.read_file(url)
 
 pred_df = load_predictions()
 geodf = load_geodata()
