@@ -42,6 +42,9 @@ for filename, file_id in FILES.items():
     output_path = os.path.join(DATA_DIR, filename)
     url = f"https://drive.google.com/uc?id={file_id}"
     print(f"⬇️ İndiriliyor: {filename}")
-    gdown.download(url, output_path, quiet=False)
+    try:
+        gdown.download(url, output_path, quiet=False)
+    except Exception as e:
+        print(f"⚠️ Hata: {filename} indirilemedi! Sebep: {e}")
 
 print("✅ Tüm dosyalar indirildi ve güncellendi.")
