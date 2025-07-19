@@ -42,16 +42,17 @@ def load_predictions():
     return pd.read_csv(url, on_bad_lines='skip')
 
 @st.cache_data(ttl=3600)
-def load_geodata():
-    file_id = "17PVPLni8r3yJRssre8HFGoQZkRds1w45"  # GeoJSON file
+def load_predictions():
+    file_id = "1Y8v2fo8w85N5ldSQcqoN1LZvGlfqQOHb"
     url = f"https://drive.google.com/uc?id={file_id}"
-    output = "/tmp/sf_blockgroup.geojson"
     try:
-        gdown.download(url, output, quiet=False)
-        return gpd.read_file(output)
+        df = pd.read_csv(url, on_bad_lines='skip')
+        st.write("✅ Yüklendi: sf_crime_11.csv")
+        st.write(df.head())
+        return df
     except Exception as e:
-        st.error(f"❌ Harita verisi yüklenemedi. Hata: {e}")
-        return gpd.GeoDataFrame()
+        st.error(f"❌ Tahmin verisi yüklenemedi. Hata: {e}")
+        return pd.DataFrame()
 
 # === LOAD ===
 pred_df = load_predictions()
