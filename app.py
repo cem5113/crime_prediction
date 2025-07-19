@@ -7,22 +7,23 @@ import folium
 from streamlit_folium import st_folium
 from datetime import datetime
 import gdown
+import os
 
 # 0. LANGUAGE SELECTION / DİL SEÇİMİ 
 st.set_page_config(page_title="Crime Risk Map / Suç Risk Haritası", layout="wide")
-st.sidebar.title("\U0001F310 Language / Dil")
+st.sidebar.title("🌐 Language / Dil")
 language = st.sidebar.radio("Select Language / Dil Seçin:", ["English", "Türkçe"])
 
 # 1. TEXT DEFINITIONS / METİN TANIMLARI 
 if language == "English":
-    title = "\U0001F6A8 Crime Risk Prediction: Hourly Risk Map"
+    title = "🚨 Crime Risk Prediction: Hourly Risk Map"
     subtitle = "This app visualizes predicted crime risk across San Francisco based on selected hour."
     hour_label = "Select an hour:"
     map_title = "Crime risk map for hour"
     info_text = "This map shows predicted crime risk (0–1) for each GEOID. Darker areas represent higher risk."
     legend_label = "Crime Risk (0–1)"
 else:
-    title = "\U0001F6A8 Suç Tahmin Modeli: Saatlik Risk Haritası"
+    title = "🚨 Suç Tahmin Modeli: Saatlik Risk Haritası"
     subtitle = "Bu uygulama, seçilen saat için San Francisco genelindeki tahmini suç riskini harita üzerinde gösterir."
     hour_label = "Bir saat seçin:"
     map_title = "Saat için suç risk haritası"
@@ -42,28 +43,42 @@ def load_predictions():
 
 @st.cache_data(ttl=3600)
 def load_geodata():
-    import os
-    file_id = "17PVPLni8r3yJRssre8HFGoQZkRds1w45"  # Google Drive file ID
+    file_id = "17PVPLni8r3yJRssre8HFGoQZkRds1w45"  # GeoJSON file
     url = f"https://drive.google.com/uc?id={file_id}"
-    output = "/tmp/sf_blockgroup.geojson"  # geçici klasör (Streamlit Cloud için)
-
+    output = "/tmp/sf_blockgroup.geojson"
     try:
         gdown.download(url, output, quiet=False)
         return gpd.read_file(output)
     except Exception as e:
         st.error(f"❌ Harita verisi yüklenemedi. Hata: {e}")
-        return gpd.GeoDataFrame()  # boş dön ama Streamlit çökmemiş olur
+        return gpd.GeoDataFrame()
 
+# === LOAD ===
 pred_df = load_predictions()
+
+# DEBUG
+if pred_df.empty:
+    st.error("❗️Veri yüklenemedi veya boş.")
+    st.stop()
+
+# DEBUG INFO
+st.write("📄 Yüklü veri sütunları:", pred_df.columns.tolist())
+st.write("📊 Veri boyutu:", pred_df.shape)
+
+# convert date
+pred_df["date"] = pd.to_datetime(pred_df["date"], errors="coerce")
+pred_df = pred_df.dropna(subset=["date"])
+pred_df["date"] = pred_df["date"].dt.strftime("%Y-%m-%d")
+
 geodf = load_geodata()
 
 # 4. HOUR SELECTOR
-st.sidebar.header("\u23F0 " + hour_label)
+st.sidebar.header("⏰ " + hour_label)
 hour_selected = st.sidebar.selectbox(hour_label, options=sorted(pred_df["event_hour"].unique()))
-today = datetime.today().strftime("%Y-%m-%d")
+today = pred_df["date"].max()  # Otomatik en güncel gün
 
 # 5. FILTER PREDICTIONS
-pred_hour_df = pred_df[(pred_df["event_hour"] == hour_selected) & (pred_df["date"] == today)]
+pred_hour_df = pred_df[(pred_df["event_hour"] == hour_selected) & (pred_df["date"] == today)].copy()
 pred_hour_df["GEOID"] = pred_hour_df["GEOID"].astype(str).str.zfill(11)
 
 # 6. CREATE MAP
@@ -83,7 +98,7 @@ folium.Choropleth(
 ).add_to(m)
 
 # 7. DISPLAY MAP
-st.subheader(f"\U0001F552 {hour_selected}:00 - {map_title} ({today})")
+st.subheader(f"🕒 {hour_selected}:00 - {map_title} ({today})")
 st_data = st_folium(m, width=1100, height=600)
 
 # 8. INFO BOX
