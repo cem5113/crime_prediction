@@ -3,3 +3,4 @@ pandas
 geopandas
 folium
 streamlit-folium
+gdown
