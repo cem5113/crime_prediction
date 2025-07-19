@@ -1,0 +1,34 @@
+# .github/workflows/daily-update.yml
+
+name: 🔄 Daily Data Update
+
+on:
+  schedule:
+    - cron: "0 7 * * *"  # Her gün saat 02:00 (UTC)
+  workflow_dispatch:      # Elle de tetiklenebilir
+
+jobs:
+  update-data:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 📥 Repo'yu klonla
+        uses: actions/checkout@v3
+
+      - name: 🐍 Python kurulumu
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+
+      - name: 📦 Gerekli paketleri yükle
+        run: pip install -r requirements.txt
+
+      - name: 🔁 Veri güncelleme scripti
+        run: python daily_update.py
+
+      - name: 💾 Güncellenen verileri commit + push et
+        run: |
+          git config --global user.name "github-actions"
+          git config --global user.email "actions@github.com"
+          git add data/
+          git commit -m "🔄 Günlük otomatik veri güncellemesi"
+          git push || echo "Değişiklik yok, push atlanıyor"
