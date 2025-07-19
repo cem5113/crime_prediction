@@ -43,16 +43,16 @@ def load_predictions():
 @st.cache_data(ttl=3600)
 def load_geodata():
     import os
-    file_id = "17PVPLni8r3yJRssre8HFGoQZkRds1w45"
+    file_id = "17PVPLni8r3yJRssre8HFGoQZkRds1w45"  # Google Drive file ID
     url = f"https://drive.google.com/uc?id={file_id}"
-    output = "/tmp/sf_geodata.geojson"  # GeoJSON olduğunu varsayıyoruz
+    output = "/tmp/sf_blockgroup.geojson"  # geçici klasör (Streamlit Cloud için)
 
-    # Dosyayı indir
-    gdown.download(url, output, quiet=False)
-
-    # GeoDataFrame olarak oku
-    return gpd.read_file(output)
-
+    try:
+        gdown.download(url, output, quiet=False)
+        return gpd.read_file(output)
+    except Exception as e:
+        st.error(f"❌ Harita verisi yüklenemedi. Hata: {e}")
+        return gpd.GeoDataFrame()  # boş dön ama Streamlit çökmemiş olur
 
 pred_df = load_predictions()
 geodf = load_geodata()
