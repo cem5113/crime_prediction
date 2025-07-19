@@ -42,8 +42,17 @@ def load_predictions():
 
 @st.cache_data(ttl=3600)
 def load_geodata():
-    url = "https://raw.githubusercontent.com/cem5113/crime_prediction/main/sf_blockgroup.geojson"
-    return gpd.read_file(url)
+    import os
+    file_id = "17PVPLni8r3yJRssre8HFGoQZkRds1w45"
+    url = f"https://drive.google.com/uc?id={file_id}"
+    output = "/tmp/sf_geodata.geojson"  # GeoJSON olduğunu varsayıyoruz
+
+    # Dosyayı indir
+    gdown.download(url, output, quiet=False)
+
+    # GeoDataFrame olarak oku
+    return gpd.read_file(output)
+
 
 pred_df = load_predictions()
 geodf = load_geodata()
