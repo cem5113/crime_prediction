@@ -104,3 +104,9 @@ best_model = stacking_clf  # veya top3_model'den biri
 df["crime_risk"] = best_model.predict_proba(X)[:, 1]
 df[["GEOID", "date", "event_hour", "crime_risk"]].to_csv("crime_risk_predictions.csv", index=False)
 
+# 14. Git'e ekle ve push et
+!git config --global user.name "cem5113"
+!git config --global user.email "cem5113@hotmail.com"
+!git add crime_risk_predictions.csv
+!git commit -m "📈 Günlük stacking tahminleri yüklendi"
+!git push
