@@ -98,3 +98,9 @@ print(results_df)
 # 12. En iyi modeller
 top3_models = results_df["Model"].iloc[:3].tolist()
 print(f"\n🔍 En başarılı 3 model: {top3_models}")
+
+# 13. Tahmin üret ve kaydet
+best_model = stacking_clf  # veya top3_model'den biri
+df["crime_risk"] = best_model.predict_proba(X)[:, 1]
+df[["GEOID", "date", "event_hour", "crime_risk"]].to_csv("crime_risk_predictions.csv", index=False)
+
