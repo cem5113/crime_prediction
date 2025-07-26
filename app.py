@@ -37,9 +37,8 @@ st.markdown(subtitle)
 # 3. LOAD DATA
 @st.cache_data(ttl=3600)
 def load_predictions():
-    file_id = "1Y8v2fo8w85N5ldSQcqoN1LZvGlfqQOHb"
-    url = f"https://drive.google.com/uc?id={file_id}"
-    return pd.read_csv(url, on_bad_lines='skip')
+    url = "https://github.com/cem5113/crime_prediction_data/raw/main/crime_risk_predictions.csv"
+    return pd.read_csv(url)
 
 @st.cache_data(ttl=3600)
 def load_predictions():
