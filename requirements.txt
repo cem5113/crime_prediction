@@ -1,6 +1,11 @@
-streamlit
 pandas
+numpy
+scikit-learn
+joblib
 geopandas
+shapely
 folium
+streamlit
 streamlit-folium
-gdown
+matplotlib
+pyproj
