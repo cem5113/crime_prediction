@@ -1,78 +1,179 @@
-import os, io, zipfile, requests
-import streamlit as st
+# streamlit_app.py
+import io, json, zipfile, requests, datetime as dt
 import pandas as pd
-from pathlib import Path
+import geopandas as gpd
+import streamlit as st
+import pydeck as pdk
 
-st.set_page_config(page_title="SF Crime Dashboard", layout="wide")
-st.title("SF Crime Dashboard")
+# --- Ayarlar ---
+# Örn: cem5113/crime_prediction_data
+REPO = st.secrets.get("REPO", "cem5113/crime_prediction_data")
+BRANCH = st.secrets.get("BRANCH", "main")
+ARTIFACT_NAME = st.secrets.get("ARTIFACT_NAME", "sf-crime-pipeline-output")
+USE_ARTIFACT = st.secrets.get("USE_ARTIFACT", True)  # commit modunda False yap
+GITHUB_TOKEN = st.secrets.get("GITHUB_TOKEN", None)
 
-# ---- Artifact'tan veri çekici ----
-def ensure_data():
-    # Yerelde var mı?
-    for d in ["crime_data", "out", "last_good/crime_data", "."]:
-        if Path(d, "risk_hourly.csv").exists():
-            return Path(d)
+# Pipeline'ın bıraktığı dosya yolları (artifact zip içinde de aynı)
+PATH_RISK = "crime_data/risk_hourly.csv"
+PATH_RECS = "crime_data/patrol_recs.csv"            # veya patrol_recs_multi.csv
+PATH_METRICS = "crime_data/metrics_stacking.csv"
+PATH_GEOJSON = "crime_data/sf_census_blocks_with_population.geojson"  # poligonlar
 
-    # Yoksa GitHub Actions artifact indir
-    token = os.getenv("GH_TOKEN")
-    owner = os.getenv("GH_OWNER", "cem5113")
-    repo  = os.getenv("GH_REPO",  "crime_prediction_data")
-    if not token:
-        st.warning("GH_TOKEN yok; artifact indirilemiyor. 'crime_data' klasörüne dosyaları commitleyebilir ya da GH_TOKEN ekleyebilirsin.")
-        return Path("crime_data")
-
-    st.info("En güncel artifact indiriliyor…")
-    headers = {
-        "Authorization": f"Bearer {token}",
-        "Accept": "application/vnd.github+json",
-        "X-GitHub-Api-Version": "2022-11-28",
-    }
-
-    # 1) Artifact listesinden 'sf-crime-pipeline-output' olanın en yenisini bul
-    r = requests.get(f"https://api.github.com/repos/{owner}/{repo}/actions/artifacts?per_page=100", headers=headers, timeout=30)
+# --- Yardımcılar ---
+@st.cache_data(ttl=3600)
+def read_raw(path: str) -> bytes:
+    url = f"https://raw.githubusercontent.com/{REPO}/{BRANCH}/{path}"
+    r = requests.get(url, timeout=60)
     r.raise_for_status()
-    arts = r.json().get("artifacts", [])
-    arts = [a for a in arts if a.get("name") == "sf-crime-pipeline-output"]
+    return r.content
+
+@st.cache_data(ttl=900)
+def fetch_artifact_zip() -> zipfile.ZipFile:
+    if not GITHUB_TOKEN:
+        raise RuntimeError("GITHUB_TOKEN yok; artifact indirilemez.")
+    s = requests.Session()
+    s.headers.update({"Authorization": f"Bearer {GITHUB_TOKEN}",
+                      "Accept": "application/vnd.github+json"})
+    # Son artefaktları listele
+    j = s.get(f"https://api.github.com/repos/{REPO}/actions/artifacts?per_page=100", timeout=60).json()
+    arts = [a for a in j.get("artifacts", []) if a["name"] == ARTIFACT_NAME and not a["expired"]]
     if not arts:
-        st.error("Artifact bulunamadı. Workflow çıktısı henüz yüklenmemiş olabilir.")
-        return Path("crime_data")
-    arts.sort(key=lambda a: a.get("updated_at",""), reverse=True)
-    art = arts[0]
+        raise RuntimeError("Uygun artifact bulunamadı.")
+    art = sorted(arts, key=lambda a: a["created_at"], reverse=True)[0]
+    z = s.get(art["archive_download_url"], timeout=120)
+    z.raise_for_status()
+    return zipfile.ZipFile(io.BytesIO(z.content))
 
-    # 2) Zip'i indir ve 'crime_data/' altına çıkar
-    dl = requests.get(art["archive_download_url"], headers=headers, timeout=60)
-    dl.raise_for_status()
-    dest = Path("crime_data"); dest.mkdir(exist_ok=True)
-    with zipfile.ZipFile(io.BytesIO(dl.content)) as z:
-        for m in z.namelist():
-            if m.endswith((".csv", ".geojson")):
-                # Artifact bazen crime_data/ önekiyle gelir; her ikisini de ele al
-                if m.startswith("crime_data/"):
-                    z.extract(m, ".")
-                else:
-                    with z.open(m) as f, open(dest / os.path.basename(m), "wb") as out:
-                        out.write(f.read())
-    return Path("crime_data")
+def _read_from_artifact(zf: zipfile.ZipFile, inner_path: str) -> bytes:
+    with zf.open(inner_path) as f:
+        return f.read()
 
-DATA_DIR = ensure_data()
-
-def show_csv(name):
-    st.subheader(name)
-    p = DATA_DIR / name
-    if p.exists():
+@st.cache_data(ttl=900)
+def load_csv(inner_path: str) -> pd.DataFrame:
+    """Artifact varsa oradan, yoksa raw'dan oku."""
+    if USE_ARTIFACT:
         try:
-            st.dataframe(pd.read_csv(p).head(200))
+            zf = fetch_artifact_zip()
+            data = _read_from_artifact(zf, inner_path)
+            return pd.read_csv(io.BytesIO(data))
         except Exception as e:
-            st.warning(f"Okunamadı: {e}")
-    else:
-        st.info(f"{name} bulunamadı")
+            st.warning(f"Artifact okunamadı ({e}). raw moda düşülüyor…")
+    # raw fallback
+    return pd.read_csv(io.BytesIO(read_raw(inner_path)))
 
-for fname in [
-    "risk_hourly.csv",
-    "patrol_recs.csv",
-    "patrol_recs_multi.csv",
-    "metrics_all.csv",
-]:
-    show_csv(fname)
+@st.cache_data(ttl=900)
+def load_geojson() -> gpd.GeoDataFrame:
+    """GeoJSON'ı artifact'tan ya da raw'dan GeoDataFrame'e yükle."""
+    if USE_ARTIFACT:
+        try:
+            zf = fetch_artifact_zip()
+            data = _read_from_artifact(zf, PATH_GEOJSON).decode("utf-8")
+            gj = json.loads(data)
+            gdf = gpd.GeoDataFrame.from_features(gj["features"], crs="EPSG:4326")
+            return gdf
+        except Exception as e:
+            st.warning(f"GeoJSON artifact'tan okunamadı ({e}). raw moda düşülüyor…")
+    # raw fallback
+    content = read_raw(PATH_GEOJSON).decode("utf-8")
+    gj = json.loads(content)
+    return gpd.GeoDataFrame.from_features(gj["features"], crs="EPSG:4326")
 
-st.caption(f"Veri dizini: `{DATA_DIR.resolve()}`")
+@st.cache_data(ttl=900)
+def centroids_from_geojson(gdf: gpd.GeoDataFrame) -> pd.DataFrame:
+    # WGS84'te centroid (~yaklaşık); isterseniz projeksiyonlayıp hesaplayın
+    c = gdf.copy()
+    c["centroid"] = c.geometry.centroid
+    return pd.DataFrame({
+        "GEOID": c["GEOID"].astype(str),
+        "lat": c["centroid"].y,
+        "lon": c["centroid"].x,
+    })
+
+# --- UI ---
+st.set_page_config(page_title="SF Crime Risk", layout="wide")
+st.title("SF Crime Risk • (Pipeline → Streamlit)")
+
+colA, colB, colC = st.columns([1.2,1,1])
+with colA:
+    st.caption("Veri Kaynağı")
+    mode = "Artifact" if USE_ARTIFACT else "Raw/Commit"
+    st.write(f"• Okuma modu: **{mode}**  \n• Repo: `{REPO}`  \n• Branch: `{BRANCH}`")
+
+with colB:
+    top_k = st.number_input("Top-K (liste/harita)", 10, 500, 50, 10)
+with colC:
+    today = dt.date.today()
+    sel_date = st.date_input("Tarih", today)
+
+risk_df = load_csv(PATH_RISK)
+# Beklenen kolonlar: GEOID,date,hour_range,risk_score,risk_level,risk_decile
+risk_df["date"] = pd.to_datetime(risk_df["date"]).dt.date
+hours = risk_df["hour_range"].dropna().unique().tolist()
+hour = st.select_slider("Saat aralığı", options=sorted(hours), value=hours[0])
+
+# Filtre + Top-K
+f = risk_df[(risk_df["date"] == sel_date) & (risk_df["hour_range"] == hour)].copy()
+if f.empty:
+    st.warning("Seçilen tarih/saat için kayıt yok. Başka seçim dener misin?")
+else:
+    f = f.sort_values("risk_score", ascending=False).head(int(top_k))
+
+    # GEOID → centroid
+    geo = load_geojson()
+    cent = centroids_from_geojson(geo)
+    view = f.merge(cent, on="GEOID", how="left").dropna(subset=["lat","lon"])
+
+    # Renk/size kodlama
+    level_colors = {
+        "critical": [220, 20, 60],   # kırmızı
+        "high":     [255, 140, 0],   # turuncu
+        "medium":   [255, 215, 0],   # sarı
+        "low":      [34, 139, 34],   # yeşil
+    }
+    view["color"] = view["risk_level"].map(level_colors).fillna([100,100,100])
+    # skor’a göre yarıçap (metre ~ görsel)
+    view["radius"] = (view["risk_score"].clip(0,1) * 40 + 10).astype(int)
+
+    st.subheader(f"📍 {sel_date} — {hour} — Top {len(view)} GEOID")
+    st.dataframe(view[["GEOID","risk_score","risk_level","risk_decile"]].reset_index(drop=True))
+
+    # Harita (pydeck)
+    initial = pdk.ViewState(
+        latitude=float(view["lat"].mean()) if not view.empty else 37.7749,
+        longitude=float(view["lon"].mean()) if not view.empty else -122.4194,
+        zoom=11, pitch=30
+    )
+    layer_points = pdk.Layer(
+        "ScatterplotLayer",
+        data=view,
+        get_position=["lon","lat"],
+        get_radius="radius",
+        get_fill_color="color",
+        pickable=True
+    )
+    # Poligon katmanı (isteğe bağlı; ağır gelirse kapat)
+    layer_poly = pdk.Layer(
+        "GeoJsonLayer",
+        data=json.loads(read_raw(PATH_GEOJSON)) if not USE_ARTIFACT else json.loads(_read_from_artifact(fetch_artifact_zip(), PATH_GEOJSON)),
+        stroked=False, filled=False, get_line_color=[150,150,150], line_width_min_pixels=1
+    )
+    st.pydeck_chart(pdk.Deck(layers=[layer_poly, layer_points], initial_view_state=initial, tooltip={"text":"GEOID: {GEOID}\nRisk: {risk_score:.3f} ({risk_level})"}))
+
+st.divider()
+with st.expander("🚓 Devriye Önerileri (patrol_recs*.csv)"):
+    try:
+        recs = load_csv(PATH_RECS)
+        recs["date"] = pd.to_datetime(recs["date"]).dt.date
+        fr = recs[(recs["date"] == sel_date) & (recs["hour_range"] == hour)].copy()
+        st.dataframe(fr.head(100))
+    except Exception as e:
+        st.info(f"Devriye önerileri okunamadı: {e}")
+
+with st.expander("📈 Model Metrikleri"):
+    try:
+        m = load_csv(PATH_METRICS)
+        st.dataframe(m)
+    except Exception as e:
+        st.info(f"Metrikler yüklenemedi: {e}")
+
+st.caption("Kaynak: GitHub Actions ile üretilen `crime_data/` çıktıları")
