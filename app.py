@@ -33,17 +33,9 @@ USE_ARTIFACT  = _to_bool(st.secrets.get("USE_ARTIFACT", True), True)
 PATH_RISK       = "crime_data/risk_hourly.csv"
 CANDIDATE_RECS  = ["crime_data/patrol_recs_multi.csv", "crime_data/patrol_recs.csv"]
 PATH_METRICS    = "crime_data/metrics_stacking.csv"
-PATH_GEOJSON    = "crime_data/sf_census_blocks_with_population.geojson"
+PATH_GEOJSON    = "crime_data/sf_census_blocks_with_population.geojson"  # isim blok dese de içerik tract olabilir
 
 # ----------------- Yardımcılar -----------------
-def _norm_geoid(val, width: int | None = None):
-    """Sadece rakamları al, verilen genişliğe sıfır doldur."""
-    if pd.isna(val): return None
-    s = re.sub(r"\D", "", str(val))
-    if width is None:
-        width = int(st.session_state.get("GEOID_WIDTH", 11))
-    return s[:width].zfill(width)
-
 def _retry_get(url: str, headers: dict | None = None, timeout: int = 60, retries: int = 2) -> requests.Response:
     last_err = None
     for i in range(retries + 1):
@@ -112,6 +104,7 @@ def _detect_geoid_col(cols: list[str]) -> str | None:
     cand = ["GEOID", "GEOID10", "GEOID20", "geoid", "geoid10", "geoid20"]
     for c in cand:
         if c in cols: return c
+    # bazı dosyalarda 'geoid' property içinde olabilir, yoksa None
     return None
 
 @st.cache_resource(ttl=900)
@@ -136,8 +129,8 @@ def load_geojson_gdf() -> gpd.GeoDataFrame:
     # genişlik tespiti ve session'a koy
     width = int(gdf["GEOID"].astype(str).str.len().max())
     st.session_state["GEOID_WIDTH"] = width
-    # normalize
-    gdf["GEOID"] = gdf["GEOID"].apply(lambda x: _norm_geoid(x, width))
+    # normalize: sadece rakamlar ve sıfır doldurma
+    gdf["GEOID"] = gdf["GEOID"].apply(lambda x: re.sub(r"\D", "", str(x))[:width].zfill(width))
     return gdf
 
 @st.cache_data(ttl=900)
@@ -149,6 +142,7 @@ def load_geojson_dict() -> dict:
 @st.cache_data(ttl=900)
 def centroids_from_geojson() -> pd.DataFrame:
     gdf = load_geojson_gdf()
+    # tract/Block karışsa bile representative_point daha stabil
     try:
         gg = gdf.to_crs(3857)
         pts = gg.representative_point().to_crs(4326)
@@ -157,6 +151,67 @@ def centroids_from_geojson() -> pd.DataFrame:
         c = gdf.copy()
         c["centroid"] = c.geometry.centroid
         return pd.DataFrame({"GEOID": c["GEOID"].astype(str), "lat": c["centroid"].y, "lon": c["centroid"].x})
+
+def _len_mode(s: pd.Series) -> int:
+    s = s.dropna().astype(str)
+    if s.empty: return 0
+    return int(s.str.len().mode().iloc[0])
+
+def _only_digits(s: pd.Series) -> pd.Series:
+    return s.astype(str).str.replace(r"\D", "", regex=True)
+
+def smart_merge_by_geoid(df: pd.DataFrame, cent: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
+    """
+    Önce tam eşleşme, yoksa ortak prefix (min uzunluk) ile eşleştir.
+    Geriye (view, info) döner.
+    """
+    info = {}
+    D = df.copy()
+    C = cent.copy()
+
+    D["GEOID_raw"] = _only_digits(D["GEOID"])
+    C["GEOID_raw"] = _only_digits(C["GEOID"])
+
+    lenD = _len_mode(D["GEOID_raw"])
+    lenC = _len_mode(C["GEOID_raw"])
+    info["len_risk_mode"] = lenD
+    info["len_cent_mode"] = lenC
+
+    # 1) Tam uzunluk eşleştirme (her iki tarafı da kendi mod uzunluğuna zfill)
+    D["GEOID_norm"] = D["GEOID_raw"].str[:lenD].str.zfill(lenD)
+    C["GEOID_norm"] = C["GEOID_raw"].str[:lenC].str.zfill(lenC)
+
+    view_exact = D.merge(C[["GEOID_norm","lat","lon"]], on="GEOID_norm", how="left")
+    exact_matches = int(view_exact["lat"].notna().sum())
+    info["matches_exact"] = exact_matches
+
+    if exact_matches > 0:
+        view = view_exact.copy()
+        view["GEOID"] = view["GEOID_norm"]
+        info["join_mode"] = "exact"
+        return view.drop(columns=["GEOID_raw","GEOID_norm"]), info
+
+    # 2) Prefix ile (min uzunluk üzerinden) eşleştirme
+    L = min(lenD, lenC)
+    if L == 0:
+        view = D.copy()
+        view["lat"] = pd.NA
+        view["lon"] = pd.NA
+        info["join_mode"] = "failed"
+        info["matches_prefix"] = 0
+        return view.drop(columns=["GEOID_raw","GEOID_norm"]), info
+
+    D["GEOID_L"] = D["GEOID_raw"].str[:L].str.zfill(L)
+    C["GEOID_L"] = C["GEOID_raw"].str[:L].str.zfill(L)
+    view_pref = D.merge(C[["GEOID_L","lat","lon"]], on="GEOID_L", how="left")
+    pref_matches = int(view_pref["lat"].notna().sum())
+    info["join_mode"] = "prefix"
+    info["prefix_len"] = L
+    info["matches_prefix"] = pref_matches
+
+    view = view_pref.copy()
+    view["GEOID"] = view["GEOID_L"]
+    return view.drop(columns=["GEOID_raw","GEOID_norm","GEOID_L"]), info
 
 # ----------------- UI -----------------
 st.set_page_config(page_title="SF Crime Dashboard", layout="wide")
@@ -191,19 +246,11 @@ with tab_dash:
         st.error(f"`{PATH_RISK}` okunamadı: {e}")
         st.stop()
 
-    # GeoJSON'u yükle ve GEOID genişliğini belirle
-    _gdf = load_geojson_gdf()
-    geoid_width = int(st.session_state.get("GEOID_WIDTH", 11))
-
-    # GEOID normalize (geojson genişliğine göre)
-    if "GEOID" in risk_df.columns:
-        risk_df["GEOID"] = risk_df["GEOID"].apply(lambda x: _norm_geoid(x, geoid_width))
+    # Saat seçenekleri
     risk_df["date"] = pd.to_datetime(risk_df["date"], errors="coerce").dt.date
-
     def _hour_key(h):
         try: return int(str(h).split("-")[0])
         except: return 0
-
     hours = sorted(risk_df["hour_range"].dropna().unique().tolist(), key=_hour_key)
     hour = st.select_slider("Saat aralığı", options=hours, value=hours[0] if hours else None)
     if hour is None:
@@ -215,21 +262,27 @@ with tab_dash:
     if f.empty:
         st.warning("Seçilen tarih/saat için kayıt yok. Başka seçim dener misin?")
         st.stop()
-
     f = f.sort_values("risk_score", ascending=False).head(int(top_k))
 
-    # GEOID → centroid
+    # GEOID → centroid (akıllı birleştirme)
     cent = centroids_from_geojson()
     before = len(f)
-    view = f.merge(cent, on="GEOID", how="left")
-    after = view["lat"].notna().sum()
-    view = view.dropna(subset=["lat","lon"])
+    view_raw, merge_info = smart_merge_by_geoid(f.rename(columns={"GEOID":"GEOID"}), cent)
+    # view_raw'ta 'lat/lon' olabilir ama bazı satırlar NaN
+    matched = int(view_raw["lat"].notna().sum())
+    view = view_raw.dropna(subset=["lat","lon"]).copy()
 
-    if len(view) == 0:
+    # Uyarı / bilgi
+    if matched == 0:
         st.warning(
-            f"Eşleşen centroid bulunamadı (seçili kayıt: {before}, eşleşen: {after}). "
-            f"Muhtemel sebep: GEOID genişliği/formatı. GeoJSON GEOID width={geoid_width}."
+            f"Eşleşen centroid bulunamadı (seçili kayıt: {before}, eşleşen: {matched}). "
+            f"Join modu: {merge_info.get('join_mode')} • "
+            f"risk_len≈{merge_info.get('len_risk_mode')} • geo_len≈{merge_info.get('len_cent_mode')} • "
+            f"prefix_len={merge_info.get('prefix_len', '-')}"
         )
+        # Teşhis için ilk 10 GEOID örneği
+        st.code("risk GEOID örnekleri: " + ", ".join(_only_digits(f['GEOID']).astype(str).str[:20].head(10).tolist()))
+        st.code("geo  GEOID örnekleri: " + ", ".join(_only_digits(cent['GEOID']).astype(str).str[:20].head(10).tolist()))
 
     # Renk/size
     level_colors = {
@@ -238,7 +291,6 @@ with tab_dash:
         "medium":   [255, 215, 0],
         "low":      [34, 139, 34],
     }
-
     if "risk_level" in view.columns and view["risk_level"].notna().any():
         rl = view["risk_level"].astype(str).str.strip().str.lower()
         colors = rl.map(level_colors)
@@ -247,20 +299,18 @@ with tab_dash:
     else:
         vals = (view["risk_score"].fillna(0).clip(0, 1) * 255).astype(int)
         colors = vals.apply(lambda v: [v, 0, 255 - v])
-
     view["color"] = colors
     view["radius"] = (view["risk_score"].fillna(0).clip(0, 1) * 40 + 10).astype(int)
 
     st.subheader(f"📍 {sel_date} — {hour} — Top {len(view)} GEOID")
-    mcol1, mcol2 = st.columns(2)
-    with mcol1:
-        st.metric("Seçilen kayıt", len(view))
-    with mcol2:
-        st.metric("Ortalama risk", round(float(view["risk_score"].mean()) if len(view) else 0.0, 3))
+    mcol1, mcol2, mcol3 = st.columns(3)
+    with mcol1: st.metric("Seçilen kayıt", before)
+    with mcol2: st.metric("Eşleşen centroid", matched)
+    with mcol3: st.metric("Ortalama risk", round(float(view["risk_score"].mean()) if len(view) else 0.0, 3))
     st.dataframe(view[["GEOID","risk_score","risk_level","risk_decile"]].reset_index(drop=True))
 
-    # Harita (pydeck) — sadece nokta varsa çiz
-    if len(view):
+    # Harita (pydeck) — sadece eşleşme varsa çiz
+    if matched > 0:
         geojson_dict = load_geojson_dict()
         initial = pdk.ViewState(
             latitude=float(view["lat"].mean()) if not view.empty else 37.7749,
@@ -295,11 +345,14 @@ with tab_dash:
         for path in CANDIDATE_RECS:
             try:
                 recs = load_csv(path)
-                if "GEOID" in recs.columns:
-                    recs["GEOID"] = recs["GEOID"].apply(lambda x: _norm_geoid(x, geoid_width))
+                # Aynı akıllı eşleştirme mantığıyla GEOID uyumu
                 recs["date"] = pd.to_datetime(recs["date"], errors="coerce").dt.date
                 fr = recs[(recs["date"] == sel_date) & (recs["hour_range"] == hour)].copy()
-                st.dataframe(fr.head(200))
+                if not fr.empty:
+                    fr_view, _ = smart_merge_by_geoid(fr.rename(columns={"GEOID":"GEOID"}), cent)
+                    st.dataframe(fr_view.head(200))
+                else:
+                    st.info("Bu tarih/saat için devriye önerisi yok.")
                 rec_loaded = True
                 break
             except Exception as e:
@@ -391,8 +444,12 @@ with tab_diag:
             st.info("Artifact listelenemedi veya boş.")
     try:
         gdf = load_geojson_gdf()
-        st.write(f"GeoJSON OK — {len(gdf)} geometri (GEOID width={int(st.session_state.get('GEOID_WIDTH', 11))})")
-        st.dataframe(gdf.head())
+        st.write(f"GeoJSON OK — {len(gdf)} geometri (GEOID width≈{int(st.session_state.get('GEOID_WIDTH', 11))})")
+        # GEOID uzunluk dağılımları
+        st.write(
+            "GEOID uzunluk dağılımı (geo):",
+            gdf["GEOID"].astype(str).str.len().value_counts().sort_index().to_dict(),
+        )
     except Exception as e:
         st.info(f"GeoJSON teşhis: {e}")
 
