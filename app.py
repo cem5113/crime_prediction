@@ -6,16 +6,14 @@ import geopandas as gpd
 import streamlit as st
 import pydeck as pdk
 
-import sys, pathlib
+import sys, pathlib, traceback
 ROOT = pathlib.Path(__file__).resolve().parent
 SRC_DIR = ROOT / "src"
-# 'import src.xxx' çalışsın diye repo kökünü sys.path'e koy
+# 'import src.xxx' çalışsın diye yollar
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
-# İlaveten 'from config import ...' tarzı kullanım için gerekirse src'i de ekleyelim
 if SRC_DIR.exists() and str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
-
 for base in (ROOT.parent, ROOT.parent.parent):
     sdir = base / "src"
     if sdir.exists():
@@ -24,9 +22,8 @@ for base in (ROOT.parent, ROOT.parent.parent):
         if str(sdir) not in sys.path:
             sys.path.insert(0, str(sdir))
         break
-    
+
 # ----------- (opsiyonel) src modülleri: Operasyonel sekme için ----------
-import traceback
 HAS_SRC = True
 SRC_ERR = ""
 try:
@@ -128,65 +125,21 @@ def list_artifact_paths() -> list[str]:
     except Exception:
         return []
 
-def find_latest_sf_crime_csv() -> str | None:
-    """
-    Artifact içinde crime_data/sf_crime_XX.csv dosyalarından en büyük numaralı olanı döndürür.
-    Örn: sf_crime_09.csv, sf_crime_52.csv ... -> en büyüğü seçilir.
-    """
-    names = list_artifact_paths()
-    if not names:
-        return None
-    picks = []
-    for n in names:
-        m = re.search(r"(?:^|/)crime_data/sf_crime_(\d+)\.csv$", n)
-        if m:
-            picks.append((int(m.group(1)), n))
-    if not picks:
-        return None
-    picks.sort(reverse=True)  # en büyük numara başa
-    return picks[0][1]
-
-def find_latest_sf_crime_csv() -> str | None:
-    """Artifact içinde crime_data/sf_crime_XX.csv dosyalarından en büyük numaralı olanı döndürür."""
-    names = list_artifact_paths()
-    if not names:
-        return None
-    picks = []
-    for n in names:
-        m = re.search(r"(?:^|/)crime_data/sf_crime_(\d+)\.csv$", n)
-        if m:
-            picks.append((int(m.group(1)), n))
-    if not picks:
-        return None
-    picks.sort(reverse=True)
-    return picks[0][1]
-
 def find_in_artifact(candidates: list[str]) -> str | None:
-    """
-    Artifact içinde aday dosya isimlerinden birini bulur.
-    Önce tam eşleşme, sonra dosya-adı (suffix) ile arar.
-    Öncelik: 'crime_data/' ile başlayanlar ve adı 'multi' içerenler.
-    """
+    """Artifact içinde aday dosya isimlerinden birini bulur."""
     names = list_artifact_paths()
     if not names:
         return None
-
     # 1) Tam eşleşme
     for p in candidates:
         if p in names:
             return p
-
-    # 2) Suffix (dosya adı) eşleşmesi
+    # 2) Suffix eşleşmesi
     suffixes = [p.split("/")[-1] for p in candidates]
     hits = [n for n in names if any(n.endswith("/"+s) or n.endswith(s) for s in suffixes)]
     if not hits:
         return None
-
-    hits.sort(key=lambda n: (
-        0 if n.startswith("crime_data/") else 1,
-        0 if "multi" in n else 1,
-        len(n)
-    ))
+    hits.sort(key=lambda n: (0 if n.startswith("crime_data/") else 1, 0 if "multi" in n else 1, len(n)))
     return hits[0]
 
 def _resolve_inner_path(inner_path: str) -> str:
@@ -237,11 +190,8 @@ def load_geojson_dict() -> dict:
 
 @st.cache_data(ttl=900)
 def centroids_tract11_from_geojson() -> pd.DataFrame:
-    """
-    GeoJSON (block group) -> representative point -> TRACT11'e agregasyon (tek satır / tract).
-    """
+    """GeoJSON (block group) -> representative point -> TRACT11'e agregasyon (tek satır / tract)."""
     gdf = load_geojson_gdf()
-    # Representative point (poligon içi garanti nokta), WGS84'e geri dön
     try:
         pts = gdf.to_crs(3857).representative_point().to_crs(4326)
         lat = pts.y.values
@@ -249,250 +199,12 @@ def centroids_tract11_from_geojson() -> pd.DataFrame:
     except Exception:
         c = gdf.geometry.centroid
         lat, lon = c.y.values, c.x.values
-
     geo_raw = gdf["GEOID"] if "GEOID" in gdf.columns else pd.Series([""]*len(gdf))
     tract11 = geo_raw.astype(str).apply(to_tract11)
-
     cent = pd.DataFrame({"TRACT11": tract11, "lat": lat, "lon": lon})
-    # Bir tract’ta birden fazla BG olabilir → tekille
     cent = cent.groupby("TRACT11", as_index=False).agg({"lat":"mean", "lon":"mean"})
     cent = cent.rename(columns={"TRACT11":"GEOID"})
     return cent
-
-def _canon_hour_window(label: str) -> tuple[int, int]:
-    """'07:00–08:00' / '07-08' / '00-03' / '7' -> (start, end) 24h mod."""
-    nums = [int(n) for n in re.findall(r"\d{1,2}", str(label))]
-    if len(nums) >= 2:
-        s, e = nums[0] % 24, nums[1] % 24
-        if e == s:  # 07-07 gibi saçma durum gelirse 1 saat say
-            e = (s + 1) % 24
-        return s, e
-    if len(nums) == 1:
-        s = nums[0] % 24
-        return s, (s + 1) % 24
-    return 0, 1
-
-def _range_overlaps(s1: int, e1: int, s2: int, e2: int) -> bool:
-    """Döngüsel 24h aralık kesişmesi (yarım geceyi aşsa da)."""
-    def in_rng(h, s, e):
-        return (s <= h < e) if s < e else (h >= s or h < e)
-    # s1..e1 penceresinden en az bir saat s2..e2 içinde ise kesişim var say
-    for h in range(24):
-        if in_rng(h, s1, e1) and in_rng(h, s2, e2):
-            return True
-    return False
-
-def _pick_top3_from_wide(row_or_series: pd.Series) -> str:
-    # type_/prob_/p_ ile başlayan ve sayısal olan sütunlardan en yüksek 3’ü seç
-    s = row_or_series.dropna()
-    if s.empty:
-        return ""
-    s = s.astype(float)
-    top = s.sort_values(ascending=False).head(3)
-    parts = []
-    for k, v in top.items():
-        name = re.sub(r"^(type_|prob_|p_)", "", str(k)).strip().replace("_", " ").title()
-        try:
-            parts.append(f"{name}({float(v):.0%})")
-        except Exception:
-            parts.append(f"{name}")
-    return ", ".join(parts)
-
-def _coerce_numeric_percent(sr: pd.Series) -> pd.Series:
-    """'12%', '0,34', '0.12 ' gibi stringleri güvenli numeriğe çevir. 0–1 aralığına indirger."""
-    s = sr.astype(str).str.strip().str.replace("%", "", regex=False).str.replace(",", ".", regex=False)
-    v = pd.to_numeric(s, errors="coerce")
-    m = v.dropna()
-    if not m.empty and m.max() > 1.0 and m.max() <= 100.0:
-        v = v / 100.0
-    return v
-
-def _enrich_top3_crimes(df_top: pd.DataFrame, hour_label: str) -> pd.Series:
-    """df_top'taki GEOID'ler için top-3 crime karışımı (wide veya long) üret."""
-    target_s, target_e = _canon_hour_window(hour_label)
-
-    def load_candidate(path: str) -> pd.DataFrame | None:
-        try:
-            return load_csv(path, warn_on_artifact_fail=False)
-        except Exception:
-            return None
-
-    # Aday kaynaklar: artifact'ta en güncel sf_crime_*.csv + bilinen raw yollar
-    from_path = []
-    if USE_ARTIFACT:
-        latest_sf = find_latest_sf_crime_csv()
-        if latest_sf:
-            from_path.append(latest_sf)
-
-    known_raw = [
-        "crime_data/sf_crime_09.csv",   # sende olan
-        "crime_data/sf_crime_50.csv",
-        "crime_data/sf_crime_52.csv",
-        "crime_data/patrol_recs_multi.csv",
-        "crime_data/patrol_recs.csv",
-    ]
-    for k in known_raw:
-        if k not in from_path:
-            from_path.append(k)
-
-    for path in from_path:
-        df = load_candidate(path)
-        if df is None or df.empty or "GEOID" not in df.columns:
-            continue
-
-        df = df.copy()
-        df["GEOID"] = df["GEOID"].astype(str).apply(to_tract11)
-
-        # Saat filtresi (varsa)
-        sub = df
-        if "hour_range" in df.columns:
-            s_e = df["hour_range"].map(_canon_hour_window)
-            s_vals = s_e.map(lambda t: t[0])
-            e_vals = s_e.map(lambda t: t[1])
-            mask = [_range_overlaps(target_s, target_e, int(s_vals.iat[i]), int(e_vals.iat[i])) for i in range(len(df))]
-            sub = df[pd.Series(mask, index=df.index)]
-            if sub.empty:
-                sub = df
-
-        # WIDE format: type_*/prob_*/p_* kolonları numeriğe zorla
-        ignore = {"GEOID","date","hour","hour_range","lat","lon"}
-        num_cols = [c for c in sub.columns if c not in ignore]
-        wide_cols = [c for c in num_cols if re.match(r"^(type_|prob_|p_)", str(c), flags=re.I)]
-        for c in list(wide_cols):
-            sub[c] = _coerce_numeric_percent(sub[c])
-        wide_cols = [c for c in wide_cols if pd.api.types.is_numeric_dtype(sub[c]) and sub[c].notna().any()]
-
-        if wide_cols:
-            agg = sub.groupby("GEOID")[wide_cols].mean(numeric_only=True)
-
-            def pick_row(g):
-                if g not in agg.index:
-                    return ""
-                s = agg.loc[g].dropna()
-                if s.empty:
-                    return ""
-                s = s.astype(float).sort_values(ascending=False).head(3)
-                parts = []
-                for k, v in s.items():
-                    name = re.sub(r"^(type_|prob_|p_)", "", str(k)).strip().replace("_", " ").title()
-                    parts.append(f"{name}({v:.0%})")
-                return ", ".join(parts)
-
-            return df_top["GEOID"].map(pick_row)
-
-        # LONG format: kategori kolon adı varyantları
-        type_candidates = [
-            "type","Type","category","Category","crime_type","crime","offense","offense_type",
-            "primary_type", "incident_category", "incident_type"
-        ]
-        type_col = next((c for c in type_candidates if c in sub.columns), None)
-        if type_col:
-            sub[type_col] = sub[type_col].astype(str).str.strip().str.title()
-            cnt = sub.groupby(["GEOID", type_col]).size().rename("cnt").reset_index()
-            cnt["share"] = cnt.groupby("GEOID")["cnt"].transform(lambda x: x / x.sum())
-            cnt = cnt.sort_values(["GEOID","share"], ascending=[True, False])
-
-            def pick_long(g):
-                rows = cnt[cnt["GEOID"] == g].head(3)
-                if rows.empty:
-                    return ""
-                return ", ".join(f"{r[type_col]}({r['share']:.0%})" for _, r in rows.iterrows())
-
-            return df_top["GEOID"].map(pick_long)
-
-    return pd.Series([""] * len(df_top), index=df_top.index)
-
-
-def debug_top3_panel(df_top: pd.DataFrame, hour_label: str):
-    """Ekranda hangi kaynak bulundu/format/sayısal dönüşüm/coverage gösterir."""
-    with st.expander("🧪 Top-3 crimes teşhis", expanded=False):
-        st.write("Seçili saat dilimi:", hour_label)
-        candidates = []
-        if USE_ARTIFACT:
-            latest_sf = find_latest_sf_crime_csv()
-            if latest_sf:
-                candidates.append(latest_sf)
-        candidates += [
-            "crime_data/sf_crime_09.csv",
-            "crime_data/sf_crime_50.csv",
-            "crime_data/sf_crime_52.csv",
-            "crime_data/patrol_recs_multi.csv",
-            "crime_data/patrol_recs.csv",
-        ]
-        st.write("Aday yollar:", candidates)
-
-        target_s, target_e = _canon_hour_window(hour_label)
-        tried = []
-        for path in candidates:
-            if path in tried:
-                continue
-            tried.append(path)
-            try:
-                df = load_csv(path, warn_on_artifact_fail=False)
-            except Exception as e:
-                st.write(f"❌ `{path}` okunamadı:", e)
-                continue
-            if df is None or df.empty:
-                st.write(f"⚠️ `{path}` boş/None")
-                continue
-
-            st.write(f"**Bulundu:** `{path}` • shape={df.shape}")
-            st.write("İlk kolonlar:", list(df.columns)[:20])
-
-            if "GEOID" not in df.columns:
-                st.write("⚠️ GEOID kolonu yok, atlanıyor.")
-                continue
-
-            tmp = df.copy()
-            tmp["GEOID"] = tmp["GEOID"].astype(str).apply(to_tract11)
-
-            # saat filtresi
-            sub = tmp
-            if "hour_range" in tmp.columns:
-                s_e = tmp["hour_range"].map(_canon_hour_window)
-                s_vals = s_e.map(lambda t: t[0])
-                e_vals = s_e.map(lambda t: t[1])
-                mask = [_range_overlaps(target_s, target_e, int(s_vals.iat[i]), int(e_vals.iat[i])) for i in range(len(tmp))]
-                sub = tmp[pd.Series(mask, index=tmp.index)]
-                st.write("Saat filtresi sonrası shape:", sub.shape)
-            else:
-                st.write("hour_range kolonu yok → tüm saatler kabul.")
-
-            # wide mı?
-            ignore = {"GEOID","date","hour","hour_range","lat","lon"}
-            num_cols = [c for c in sub.columns if c not in ignore]
-            wide_cols = [c for c in num_cols if re.match(r"^(type_|prob_|p_)", str(c), flags=re.I)]
-            if wide_cols:
-                # numerik dönüşüm denemesi
-                demo = sub[wide_cols].head(1).T
-                for c in wide_cols:
-                    sub[c] = _coerce_numeric_percent(sub[c])
-                ok_cols = [c for c in wide_cols if sub[c].notna().any()]
-                st.write("Wide tespit edildi. Örnek değerler:", demo.head(10))
-                st.write("Numerik sonrası boş olmayan kolon sayısı:", len(ok_cols))
-            else:
-                # long mı?
-                type_candidates = [
-                    "type","Type","category","Category","crime_type","crime","offense","offense_type",
-                    "primary_type", "incident_category", "incident_type"
-                ]
-                type_col = next((c for c in type_candidates if c in sub.columns), None)
-                st.write("Long format kolonu:", type_col if type_col else "yok")
-
-            # coverage
-            cov = df_top["GEOID"].astype(str).isin(sub["GEOID"].astype(str)).mean()
-            st.write(f"Eşleşen GEOID kapsaması: {cov:.0%}")
-
-            # örnek 5 GEOID için top-3
-            try:
-                sample = df_top["GEOID"].astype(str).head(5).tolist()
-                preview = _enrich_top3_crimes(df_top.head(5), hour_label)
-                st.write("Örnek (ilk 5 GEOID):", list(zip(sample, preview.tolist())))
-            except Exception as e:
-                st.write("Örnek üretilemedi:", e)
-
-            # İlk bulunan kaynağı gösterip durmak için break'i kaldırabilirsin
-            break
 
 # ----------------- UI -----------------
 st.set_page_config(page_title="SF Crime Dashboard", layout="wide")
@@ -512,19 +224,13 @@ with tab_dash:
     with colB:
         top_k = st.number_input("Top-K (liste/harita)", 10, 500, 50, 10)
     with colC:
-        # Daha geniş seçim aralığı (bugün ±3 gün)
         try:
             _tmp = load_csv(PATH_RISK).copy()
             _tmp["date"] = pd.to_datetime(_tmp["date"], errors="coerce").dt.date
-            data_min = _tmp["date"].min()
-            data_max = _tmp["date"].max()
+            default_date = _tmp["date"].max()
         except Exception:
-            data_min = data_max = dt.date.today()
-        today = dt.date.today()
-        min_d = min(data_min, today - dt.timedelta(days=3))
-        max_d = max(data_max, today + dt.timedelta(days=3))
-        default_date = today if today >= data_min else data_max
-        sel_date = st.date_input("Tarih", value=default_date, min_value=min_d, max_value=max_d)
+            default_date = dt.date.today()
+        sel_date = st.date_input("Tarih", default_date or dt.date.today())
 
     # Risk tablosu
     try:
@@ -560,7 +266,6 @@ with tab_dash:
             with st.spinner("Bu tarih için pipeline çıktısı yok. Anlık tahmin üretiliyor…"):
                 engine = InferenceEngine()
                 pred = engine.predict_topk(hour_label=hour_label_engine, topk=int(top_k))
-            # risk tablosu formatına çevir
             f = pred.rename(columns={"p_crime": "risk_score"})[["GEOID", "hour_range", "risk_score"]].copy()
             f["GEOID"] = f["GEOID"].apply(to_tract11)
             f["risk_level"] = f["risk_score"].apply(_risk_level_from_score)
@@ -616,29 +321,10 @@ with tab_dash:
 
     st.dataframe(view[["GEOID","risk_score","risk_level","risk_decile"]].reset_index(drop=True))
 
-    with st.expander("⏱ hour_range hızlı teşhis"):
-        try:
-            df = load_csv("crime_data/sf_crime_09.csv", warn_on_artifact_fail=False)
-            st.write("Kolonlar:", list(df.columns))
-            if "hour_range" in df.columns:
-                st.write("hour_range örnekleri:", df["hour_range"].astype(str).dropna().unique()[:10])
-                # Seçili dilim ile kesişen oran
-                s1, e1 = _canon_hour_window(hour)  # Dashboard'daki seçimin aynısını kullanır
-                se = df["hour_range"].astype(str).map(_canon_hour_window)
-                s2 = se.map(lambda t: t[0]); e2 = se.map(lambda t: t[1])
-                overlap = sum(_range_overlaps(int(s1), int(e1), int(s2.iat[i]), int(e2.iat[i])) for i in range(len(df))) / max(len(df),1)
-                st.write(f"Kesişim oranı: {overlap:.0%}")
-            else:
-                st.warning("Dosyada 'hour_range' kolonu yok.")
-        except Exception as e:
-            st.error(f"Okuma hatası: {e}")
-        
     # Harita (pydeck) — sadece nokta varsa çiz + JSON güvenli veri
     if matched > 0:
         point_cols = ["GEOID", "lat", "lon", "risk_score", "risk_level", "color", "radius"]
         point_df = view[point_cols].copy()
-
-        # Türleri normalize et
         point_df["GEOID"] = point_df["GEOID"].astype(str)
         point_df["risk_level"] = point_df["risk_level"].fillna("").astype(str)
         point_df["risk_score"] = pd.to_numeric(point_df["risk_score"], errors="coerce").fillna(0.0).astype(float)
@@ -655,7 +341,6 @@ with tab_dash:
             longitude=float(point_df["lon"].mean()),
             zoom=11, pitch=30
         )
-
         layer_points = pdk.Layer(
             "ScatterplotLayer",
             data=point_df,
@@ -671,7 +356,6 @@ with tab_dash:
             get_line_color=[150,150,150],
             line_width_min_pixels=1,
         )
-
         st.pydeck_chart(pdk.Deck(
             layers=[layer_poly, layer_points],
             initial_view_state=initial,
@@ -684,54 +368,39 @@ with tab_dash:
     with st.expander("🚓 Devriye Önerileri (patrol_recs*.csv)"):
         rec_loaded = False
         last_err = None
-    
-        # 1) Artifact'ta gerçekten hangi yol/isim varsa onu bul
         art_path = find_in_artifact(CANDIDATE_RECS) if USE_ARTIFACT else None
-    
-        # 2) Denenecek yol listesi: (artifact'ta bulunan gerçek yol) + (raw için mantıksal yollar)
         paths_to_try = []
         if art_path:
-            paths_to_try.append(art_path)  # artifact'ta bulunan gerçek path
-        paths_to_try.extend(CANDIDATE_RECS)  # raw fallback adayları
-    
+            paths_to_try.append(art_path)
+        paths_to_try.extend(CANDIDATE_RECS)
         tried = set()
         for path in paths_to_try:
             if not path or path in tried:
                 continue
             tried.add(path)
             try:
-                # Artifact'ta hiç bulunamadığını biliyorsak raw'a sessiz düş (uyarı gösterme)
                 warn = not (USE_ARTIFACT and art_path is None and path in CANDIDATE_RECS)
                 recs = load_csv(path, warn_on_artifact_fail=warn)
-    
-                # GEOID hizası + tarih/saat filtre
                 recs["GEOID"] = recs.get("GEOID", pd.Series([None]*len(recs))).apply(to_tract11)
-                if "date" in recs.columns:
-                    recs["date"] = pd.to_datetime(recs["date"], errors="coerce").dt.date
-                else:
-                    # Tarih kolonu yoksa bugüne at; filtre yine çalışır (boş kalabilir)
-                    recs["date"] = sel_date
-    
+                recs["date"] = pd.to_datetime(recs.get("date"), errors="coerce").dt.date
                 if "hour_range" not in recs.columns:
-                    # Bazı dosyalarda farklı isim olabilir; yoksa tüm saatlere yayılmış kabul edilir
                     recs["hour_range"] = hour
-    
                 fr = recs[(recs["date"] == sel_date) & (recs["hour_range"] == hour)].copy()
-                if fr.empty:
-                    continue
-    
-                st.caption(f"Kullanılan dosya: `{path}`")
                 st.dataframe(fr.head(200))
                 rec_loaded = True
                 break
             except Exception as e:
                 last_err = e
-    
         if not rec_loaded:
-            if art_path is None and USE_ARTIFACT:
-                st.info("Artifact'ta `patrol_recs*.csv` bulunamadı; raw/commit’te de dosya görünmüyor.")
-            else:
-                st.info(f"Devriye önerileri yüklenemedi. Son hata: {last_err}")
+            st.info(f"Devriye önerileri okunamadı: {last_err}")
+
+    with st.expander("📈 Model Metrikleri"):
+        try:
+            m = load_csv(PATH_METRICS)
+            st.dataframe(m)
+        except Exception as e:
+            st.info(f"Metrikler yüklenemedi: {e}")
+
 # ============================
 # 🛠 Operasyonel (src/* kullanır)
 # ============================
@@ -741,18 +410,14 @@ with tab_ops:
         st.info("`src/` modülleri bulunamadı. Bu sekme için repo içindeki `src/` klasörünü deploy ettiğinden emin ol.")
         with st.expander("Detay (debug)"):
             st.code(SRC_ERR)
-            import os
-            st.write("ROOT:", str(ROOT))
-            st.write("SRC_DIR:", str(SRC_DIR), "exists:", SRC_DIR.exists())
             try:
+                st.write("ROOT:", str(ROOT))
+                st.write("SRC_DIR:", str(SRC_DIR), "exists:", SRC_DIR.exists())
                 st.write("ROOT içeriği (ilk 50):", os.listdir(ROOT)[:50])
-            except Exception:
-                pass
-            try:
                 if SRC_DIR.exists():
                     st.write("src/ içeriği:", os.listdir(SRC_DIR))
             except Exception:
-                pass     
+                pass
     else:
         col1, col2, col3 = st.columns([2,2,1])
         with col1:
@@ -766,34 +431,9 @@ with tab_ops:
         hour_label = to_hour_range(start_h, width_h)
         st.markdown(f"**Öneri Dilimi:** `{hour_label}`")
 
-        # --- GEOID evreni seed: Engine'in rastgele GEOID üretmesini engelle ---
-        try:
-            cent_ops = centroids_tract11_from_geojson()  # GeoJSON'dan TRACT11 centroidler
-            if not cent_ops.empty:
-                os.makedirs(os.path.dirname(paths.SF50_CSV), exist_ok=True)
-                seed = pd.DataFrame({
-                    "GEOID": cent_ops["GEOID"].astype(str).apply(to_tract11),
-                    "hour_range": hour_label,  # opsiyonel ama faydalı
-                })
-                seed = seed.drop_duplicates(subset=["GEOID"])
-                seed.to_csv(paths.SF50_CSV, index=False)
-        except Exception as e:
-            st.info(f"GEOID evreni seed oluşturulamadı: {e}")
-
-        # Engine
         with st.spinner("Tahminler üretiliyor..."):
             engine = InferenceEngine()
             df_top = engine.predict_topk(hour_label=hour_label, topk=int(topk_ops))
-
-        debug_top3_panel(df_top, hour_label)
-        
-        # Zaten enrichment yapıyoruz; yine yapalım
-        if ("top3_crime_types" not in df_top.columns) or df_top["top3_crime_types"].astype(str).str.len().fillna(0).eq(0).all():
-            df_top["top3_crime_types"] = _enrich_top3_crimes(df_top, hour_label)
-        
-        # Top-3 crime enrichment (boşsa doldur)
-        if ("top3_crime_types" not in df_top.columns) or df_top["top3_crime_types"].astype(str).str.len().fillna(0).eq(0).all():
-            df_top["top3_crime_types"] = _enrich_top3_crimes(df_top, hour_label)
 
         st.subheader("🎯 En Öncelikli Bölgeler")
         cols_show = [c for c in ["rank","hour_range","GEOID","priority_score","p_crime","lcb","ucb","top3_crime_types"] if c in df_top.columns]
@@ -805,11 +445,9 @@ with tab_ops:
         except Exception:
             cent_src = None
         if cent_src is None or cent_src.empty:
-            # GeoJSON’dan tract-11 centroidleri (fallback)
             cent_src = centroids_tract11_from_geojson()
-
         try:
-            mp = draw_map(df_top, cent_src, popup_cols=None)  # src/viz.py arayüzü
+            mp = draw_map(df_top, cent_src, popup_cols=None)
             if mp is not None:
                 from streamlit_folium import st_folium
                 st_folium(mp, height=560, width=None)
@@ -847,7 +485,6 @@ with tab_diag:
     try:
         gdf = load_geojson_gdf()
         st.write(f"GeoJSON OK — {len(gdf)} geometri")
-        # Teşhis: örnek GEOID dönüşümleri
         demo = pd.DataFrame({
             "geo_GEOID_raw": gdf["GEOID"].astype(str).head(5) if "GEOID" in gdf.columns else pd.Series([""]*5),
             "geo_TRACT11": (gdf["GEOID"].astype(str).apply(to_tract11).head(5) if "GEOID" in gdf.columns else pd.Series([""]*5)),
