@@ -124,7 +124,8 @@ def load_geojson_dict() -> dict:
     return json.loads(read_raw(PATH_GEOJSON).decode("utf-8"))
 
 @st.cache_data(ttl=900)
-def centroids_from_geojson(gdf: gpd.GeoDataFrame) -> pd.DataFrame:
+def centroids_from_geojson() -> pd.DataFrame:
+    gdf = load_geojson_gdf()              # <-- burada içerden yükle
     c = gdf.copy()
     c["centroid"] = c.geometry.centroid
     return pd.DataFrame({
@@ -133,6 +134,8 @@ def centroids_from_geojson(gdf: gpd.GeoDataFrame) -> pd.DataFrame:
         "lon": c["centroid"].x,
     })
 
+# geo_gdf = load_geojson_gdf()        
+cent = centroids_from_geojson()   
 # ----------------- UI -----------------
 st.set_page_config(page_title="SF Crime Dashboard", layout="wide")
 st.title("SF Crime Dashboard")
