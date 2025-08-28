@@ -15,9 +15,20 @@ if str(ROOT) not in sys.path:
 # İlaveten 'from config import ...' tarzı kullanım için gerekirse src'i de ekleyelim
 if SRC_DIR.exists() and str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
+
+for base in (ROOT.parent, ROOT.parent.parent):
+    sdir = base / "src"
+    if sdir.exists():
+        if str(base) not in sys.path:
+            sys.path.insert(0, str(base))
+        if str(sdir) not in sys.path:
+            sys.path.insert(0, str(sdir))
+        break
     
 # ----------- (opsiyonel) src modülleri: Operasyonel sekme için ----------
+import traceback
 HAS_SRC = True
+SRC_ERR = ""
 try:
     from src.config import params, paths
     from src.common import to_hour_range
@@ -26,6 +37,7 @@ try:
     from src.viz import draw_map
 except Exception:
     HAS_SRC = False
+    SRC_ERR = traceback.format_exc()
 
 # ----------------- Ayarlar / Secrets -----------------
 REPO          = st.secrets.get("REPO", "cem5113/crime_prediction_data")
@@ -442,6 +454,20 @@ with tab_ops:
     st.subheader("Operasyonel Risk Paneli")
     if not HAS_SRC:
         st.info("`src/` modülleri bulunamadı. Bu sekme için repo içindeki `src/` klasörünü deploy ettiğinden emin ol.")
+        with st.expander("Detay (debug)"):
+            st.code(SRC_ERR)
+            import os
+            st.write("ROOT:", str(ROOT))
+            st.write("SRC_DIR:", str(SRC_DIR), "exists:", SRC_DIR.exists())
+            try:
+                st.write("ROOT içeriği (ilk 50):", os.listdir(ROOT)[:50])
+            except Exception:
+                pass
+            try:
+                if SRC_DIR.exists():
+                    st.write("src/ içeriği:", os.listdir(SRC_DIR))
+            except Exception:
+                pass     
     else:
         col1, col2, col3 = st.columns([2,2,1])
         with col1:
