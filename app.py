@@ -481,6 +481,21 @@ with tab_ops:
         hour_label = to_hour_range(start_h, width_h)
         st.markdown(f"**Öneri Dilimi:** `{hour_label}`")
 
+        # --- GEOID evreni seed: Engine'in rastgele GEOID üretmesini engelle ---
+        try:
+            cent_ops = centroids_tract11_from_geojson()  # GeoJSON'dan TRACT11 centroidler
+            if not cent_ops.empty:
+                os.makedirs(os.path.dirname(paths.SF50_CSV), exist_ok=True)
+                seed = pd.DataFrame({
+                    "GEOID": cent_ops["GEOID"].astype(str).apply(to_tract11),
+                    "hour_range": hour_label,  # opsiyonel ama faydalı
+                })
+                seed = seed.drop_duplicates(subset=["GEOID"])
+                seed.to_csv(paths.SF50_CSV, index=False)
+        except Exception as e:
+            st.info(f"GEOID evreni seed oluşturulamadı: {e}")
+
+        # Engine
         with st.spinner("Tahminler üretiliyor..."):
             engine = InferenceEngine()
             df_top = engine.predict_topk(hour_label=hour_label, topk=int(topk_ops))
