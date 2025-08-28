@@ -162,8 +162,12 @@ def _only_digits(s: pd.Series) -> pd.Series:
 
 def smart_merge_by_geoid(df: pd.DataFrame, cent: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
     """
-    Önce tam eşleşme, yoksa ortak prefix (min uzunluk) ile eşleştir.
-    Geriye (view, info) döner.
+    GEOID akıllı birleştirme:
+    1) Geo 12/15 hane (BG/Block) + Risk 10/11 hane ise: T=11 (tract) üzerinden eşleştir
+       - Risk: zfill(11)
+       - Geo:  first 11 hane
+    2) Tam uzunluk eşleşmesi (zfill ile)
+    3) Prefix (min uzunluk) fallback
     """
     info = {}
     D = df.copy()
@@ -177,41 +181,63 @@ def smart_merge_by_geoid(df: pd.DataFrame, cent: pd.DataFrame) -> tuple[pd.DataF
     info["len_risk_mode"] = lenD
     info["len_cent_mode"] = lenC
 
-    # 1) Tam uzunluk eşleştirme (her iki tarafı da kendi mod uzunluğuna zfill)
-    D["GEOID_norm"] = D["GEOID_raw"].str[:lenD].str.zfill(lenD)
-    C["GEOID_norm"] = C["GEOID_raw"].str[:lenC].str.zfill(lenC)
+    # --- 1) Tract-11 hizası: Geo=12/15 ve Risk=10/11 ise özel yol ---
+    if (lenC in (12, 15)) and (lenD in (10, 11)):
+        T = 11
+        Dkey = D["GEOID_raw"].str.zfill(T).str[-T:]    # 10 hane ise başa '0' eklenir -> 11 hane
+        Ckey = C["GEOID_raw"].str[:T].str.zfill(T)     # Geo'nun ilk 11 hanesi (tract)
+        view = D.copy()
+        view["__key"] = Dkey
+        C11 = C.copy()
+        C11["__key"] = Ckey
+        view = view.merge(C11[["__key", "lat", "lon"]], on="__key", how="left").drop(columns="__key")
+        matches = int(view["lat"].notna().sum())
+        info["join_mode"] = "tract11_from_block"
+        info["target_len"] = T
+        info["matches_tract11"] = matches
+        view["GEOID"] = Dkey
+        if matches > 0:
+            return view.drop(columns=["GEOID_raw"]), info
+        # eşleşme yoksa devam edip diğer modları deneriz
 
-    view_exact = D.merge(C[["GEOID_norm","lat","lon"]], on="GEOID_norm", how="left")
+    # --- 2) Tam uzunluk eşleşmesi ---
+    Dnorm = D["GEOID_raw"].str[:lenD].str.zfill(lenD)
+    Cnorm = C["GEOID_raw"].str[:lenC].str.zfill(lenC)
+    view_exact = D.copy()
+    view_exact["__key"] = Dnorm
+    C_exact = C.copy()
+    C_exact["__key"] = Cnorm
+    view_exact = view_exact.merge(C_exact[["__key", "lat", "lon"]], on="__key", how="left").drop(columns="__key")
     exact_matches = int(view_exact["lat"].notna().sum())
     info["matches_exact"] = exact_matches
-
     if exact_matches > 0:
-        view = view_exact.copy()
-        view["GEOID"] = view["GEOID_norm"]
         info["join_mode"] = "exact"
-        return view.drop(columns=["GEOID_raw","GEOID_norm"]), info
+        view_exact["GEOID"] = Dnorm
+        return view_exact.drop(columns=["GEOID_raw"]), info
 
-    # 2) Prefix ile (min uzunluk üzerinden) eşleştirme
+    # --- 3) Prefix fallback: min uzunluk ---
     L = min(lenD, lenC)
-    if L == 0:
+    if L <= 0:
         view = D.copy()
         view["lat"] = pd.NA
         view["lon"] = pd.NA
         info["join_mode"] = "failed"
         info["matches_prefix"] = 0
-        return view.drop(columns=["GEOID_raw","GEOID_norm"]), info
+        return view.drop(columns=["GEOID_raw"]), info
 
-    D["GEOID_L"] = D["GEOID_raw"].str[:L].str.zfill(L)
-    C["GEOID_L"] = C["GEOID_raw"].str[:L].str.zfill(L)
-    view_pref = D.merge(C[["GEOID_L","lat","lon"]], on="GEOID_L", how="left")
+    Dpref = D["GEOID_raw"].str[:L].str.zfill(L)
+    Cpref = C["GEOID_raw"].str[:L].str.zfill(L)
+    view_pref = D.copy()
+    view_pref["__key"] = Dpref
+    C_pref = C.copy()
+    C_pref["__key"] = Cpref
+    view_pref = view_pref.merge(C_pref[["__key", "lat", "lon"]], on="__key", how="left").drop(columns="__key")
     pref_matches = int(view_pref["lat"].notna().sum())
     info["join_mode"] = "prefix"
     info["prefix_len"] = L
     info["matches_prefix"] = pref_matches
-
-    view = view_pref.copy()
-    view["GEOID"] = view["GEOID_L"]
-    return view.drop(columns=["GEOID_raw","GEOID_norm","GEOID_L"]), info
+    view_pref["GEOID"] = Dpref
+    return view_pref.drop(columns=["GEOID_raw"]), info
 
 # ----------------- UI -----------------
 st.set_page_config(page_title="SF Crime Dashboard", layout="wide")
