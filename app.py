@@ -252,58 +252,100 @@ with tab_dash:
 
     st.dataframe(view[["GEOID","risk_score","risk_level","risk_decile"]].reset_index(drop=True))
 
-    # Harita (pydeck)
+# Harita (pydeck) — yalnızca nokta varsa çiz + JSON güvenli veri
+if matched > 0:
+    # Pydeck'e sade ve serileştirilebilir veri ver
+    point_cols = ["GEOID", "lat", "lon", "risk_score", "risk_level", "color", "radius"]
+    point_df = view[point_cols].copy()
+
+    # Türleri normalize et
+    point_df["GEOID"] = point_df["GEOID"].astype(str)
+    point_df["risk_level"] = point_df["risk_level"].fillna("").astype(str)
+    point_df["risk_score"] = pd.to_numeric(point_df["risk_score"], errors="coerce").fillna(0.0).astype(float)
+    point_df["lat"] = pd.to_numeric(point_df["lat"], errors="coerce").astype(float)
+    point_df["lon"] = pd.to_numeric(point_df["lon"], errors="coerce").astype(float)
+    point_df["radius"] = pd.to_numeric(point_df["radius"], errors="coerce").fillna(10).astype(int)
+    point_df["color"] = point_df["color"].apply(
+        lambda c: [int(c[0]), int(c[1]), int(c[2])] if isinstance(c, (list, tuple)) else [100, 100, 100]
+    )
+
     geojson_dict = load_geojson_dict()
     initial = pdk.ViewState(
-        latitude=float(view["lat"].mean()) if not view.empty else 37.7749,
-        longitude=float(view["lon"].mean()) if not view.empty else -122.4194,
+        latitude=float(point_df["lat"].mean()),
+        longitude=float(point_df["lon"].mean()),
         zoom=11, pitch=30
     )
+
     layer_points = pdk.Layer(
         "ScatterplotLayer",
-        data=view,
+        data=point_df,                     # DataFrame veriyoruz ama sadece güvenli kolonlar
         get_position=["lon","lat"],
         get_radius="radius",
         get_fill_color="color",
-        pickable=True
+        pickable=True,
     )
     layer_poly = pdk.Layer(
         "GeoJsonLayer",
         data=geojson_dict,
         stroked=False, filled=False,
         get_line_color=[150,150,150],
-        line_width_min_pixels=1
+        line_width_min_pixels=1,
     )
+
     st.pydeck_chart(pdk.Deck(
         layers=[layer_poly, layer_points],
         initial_view_state=initial,
-        tooltip={"html":"<b>GEOID</b>: {GEOID}<br/><b>Risk</b>: {risk_score} ({risk_level})"}
+        tooltip={"text": "GEOID: {GEOID}\nRisk: {risk_score} ({risk_level})"}
     ))
-
-    st.divider()
-    with st.expander("🚓 Devriye Önerileri (patrol_recs*.csv)"):
-        rec_loaded = False
-        last_err = None
-        for path in CANDIDATE_RECS:
-            try:
-                recs = load_csv(path)
-                recs["GEOID"] = recs.get("GEOID", pd.Series([None]*len(recs))).apply(to_tract11)
-                recs["date"] = pd.to_datetime(recs["date"], errors="coerce").dt.date
-                fr = recs[(recs["date"] == sel_date) & (recs["hour_range"] == hour)].copy()
-                st.dataframe(fr.head(200))
-                rec_loaded = True
-                break
-            except Exception as e:
-                last_err = e
-        if not rec_loaded:
-            st.info(f"Devriye önerileri okunamadı: {last_err}")
-
-    with st.expander("📈 Model Metrikleri"):
-        try:
-            m = load_csv(PATH_METRICS)
-            st.dataframe(m)
-        except Exception as e:
-            st.info(f"Metrikler yüklenemedi: {e}")
+else:
+    st.info("Haritada gösterecek nokta bulunamadı (eşleşen centroid yok).")
+    # Harita (pydeck) — yalnızca nokta varsa çiz + JSON güvenli veri
+    if matched > 0:
+        # Pydeck'e sade ve serileştirilebilir veri ver
+        point_cols = ["GEOID", "lat", "lon", "risk_score", "risk_level", "color", "radius"]
+        point_df = view[point_cols].copy()
+    
+        # Türleri normalize et
+        point_df["GEOID"] = point_df["GEOID"].astype(str)
+        point_df["risk_level"] = point_df["risk_level"].fillna("").astype(str)
+        point_df["risk_score"] = pd.to_numeric(point_df["risk_score"], errors="coerce").fillna(0.0).astype(float)
+        point_df["lat"] = pd.to_numeric(point_df["lat"], errors="coerce").astype(float)
+        point_df["lon"] = pd.to_numeric(point_df["lon"], errors="coerce").astype(float)
+        point_df["radius"] = pd.to_numeric(point_df["radius"], errors="coerce").fillna(10).astype(int)
+        point_df["color"] = point_df["color"].apply(
+            lambda c: [int(c[0]), int(c[1]), int(c[2])] if isinstance(c, (list, tuple)) else [100, 100, 100]
+        )
+    
+        geojson_dict = load_geojson_dict()
+        initial = pdk.ViewState(
+            latitude=float(point_df["lat"].mean()),
+            longitude=float(point_df["lon"].mean()),
+            zoom=11, pitch=30
+        )
+    
+        layer_points = pdk.Layer(
+            "ScatterplotLayer",
+            data=point_df,                     # DataFrame veriyoruz ama sadece güvenli kolonlar
+            get_position=["lon","lat"],
+            get_radius="radius",
+            get_fill_color="color",
+            pickable=True,
+        )
+        layer_poly = pdk.Layer(
+            "GeoJsonLayer",
+            data=geojson_dict,
+            stroked=False, filled=False,
+            get_line_color=[150,150,150],
+            line_width_min_pixels=1,
+        )
+    
+        st.pydeck_chart(pdk.Deck(
+            layers=[layer_poly, layer_points],
+            initial_view_state=initial,
+            tooltip={"text": "GEOID: {GEOID}\nRisk: {risk_score} ({risk_level})"}
+        ))
+    else:
+        st.info("Haritada gösterecek nokta bulunamadı (eşleşen centroid yok).")
 
 # ============================
 # 🛠 Operasyonel (src/* kullanır)
