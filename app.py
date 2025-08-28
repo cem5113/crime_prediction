@@ -226,26 +226,24 @@ with tab_dash:
     cent = centroids_from_geojson()
     view = f.merge(cent, on="GEOID", how="left").dropna(subset=["lat","lon"])
 
-# Renk/size
-level_colors = {
-    "critical": [220, 20, 60],
-    "high":     [255, 140, 0],
-    "medium":   [255, 215, 0],
-    "low":      [34, 139, 34],
-}
+    # -------- Renk/size (TAB İÇİNDE) --------
+    level_colors = {
+        "critical": [220, 20, 60],
+        "high":     [255, 140, 0],
+        "medium":   [255, 215, 0],
+        "low":      [34, 139, 34],
+    }
 
-    # risk_level varsa: haritadan renklendir, yoksa/boşsa score->gradyan
+    # risk_level varsa: kategorik renk, yoksa score→gradyan
     if "risk_level" in view.columns and view["risk_level"].notna().any():
         rl = view["risk_level"].astype(str).str.strip().str.lower()
         colors = rl.map(level_colors)
         default_color = [100, 100, 100]
-        # fillna liste yerine apply ile güvenli doldur
         colors = colors.apply(lambda c: c if isinstance(c, (list, tuple)) else default_color)
     else:
-        # Sürekli skala (risk_score -> [0,255]) yedek renk
         vals = (view["risk_score"].fillna(0).clip(0, 1) * 255).astype(int)
         colors = vals.apply(lambda v: [v, 0, 255 - v])
-    
+
     view["color"] = colors
     view["radius"] = (view["risk_score"].fillna(0).clip(0, 1) * 40 + 10).astype(int)
 
@@ -350,7 +348,13 @@ with tab_ops:
             cent_src = centroids_from_geojson()  # geojson'dan fallback
 
         try:
-            mp = draw_map(df_top, cent_src, use_cluster=True, show_heatmap=True, map_height=560, zoom_start=12)
+            # draw_map imzasına uygun çağrı
+            mp = draw_map(
+                df_top,
+                cent_src,
+                popup_cols=["GEOID","hour_range","p_crime","priority_score","top3_crime_types"],
+                height=560
+            )
             if mp is not None:
                 from streamlit_folium import st_folium
                 st_folium(mp, height=560, width=None)
