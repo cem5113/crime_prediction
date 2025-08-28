@@ -106,6 +106,34 @@ def list_artifact_paths() -> list[str]:
     except Exception:
         return []
 
+def find_in_artifact(candidates: list[str]) -> str | None:
+    """
+    Artifact içinde aday dosya isimlerinden birini bulur.
+    Önce tam eşleşme, sonra dosya-adı (suffix) ile arar.
+    Öncelik: 'crime_data/' ile başlayanlar ve adı 'multi' içerenler.
+    """
+    names = list_artifact_paths()
+    if not names:
+        return None
+
+    # 1) Tam eşleşme
+    for p in candidates:
+        if p in names:
+            return p
+
+    # 2) Suffix (dosya adı) eşleşmesi
+    suffixes = [p.split("/")[-1] for p in candidates]
+    hits = [n for n in names if any(n.endswith("/"+s) or n.endswith(s) for s in suffixes)]
+    if not hits:
+        return None
+
+    hits.sort(key=lambda n: (
+        0 if n.startswith("crime_data/") else 1,
+        0 if "multi" in n else 1,
+        len(n)
+    ))
+    return hits[0]
+
 def _resolve_inner_path(inner_path: str) -> str:
     names = list_artifact_paths()
     if not names:
@@ -123,13 +151,14 @@ def _read_from_artifact(inner_path: str) -> bytes:
     return zf.read(real)
 
 @st.cache_data(ttl=900)
-def load_csv(inner_path: str) -> pd.DataFrame:
+def load_csv(inner_path: str, *, warn_on_artifact_fail: bool = True) -> pd.DataFrame:
     if USE_ARTIFACT:
         try:
             data = _read_from_artifact(inner_path)
             return pd.read_csv(io.BytesIO(data))
         except Exception as e:
-            st.warning(f"Artifact okunamadı ({e}). raw moda geçiliyor…")
+            if warn_on_artifact_fail:
+                st.warning(f"Artifact okunamadı ({e}). raw moda geçiliyor…")
     return pd.read_csv(io.BytesIO(read_raw(inner_path)))
 
 @st.cache_resource(ttl=900)
@@ -348,27 +377,54 @@ with tab_dash:
     with st.expander("🚓 Devriye Önerileri (patrol_recs*.csv)"):
         rec_loaded = False
         last_err = None
-        for path in CANDIDATE_RECS:
+    
+        # 1) Artifact'ta gerçekten hangi yol/isim varsa onu bul
+        art_path = find_in_artifact(CANDIDATE_RECS) if USE_ARTIFACT else None
+    
+        # 2) Denenecek yol listesi: (artifact'ta bulunan gerçek yol) + (raw için mantıksal yollar)
+        paths_to_try = []
+        if art_path:
+            paths_to_try.append(art_path)  # artifact'ta bulunan gerçek path
+        paths_to_try.extend(CANDIDATE_RECS)  # raw fallback adayları
+    
+        tried = set()
+        for path in paths_to_try:
+            if not path or path in tried:
+                continue
+            tried.add(path)
             try:
-                recs = load_csv(path)
+                # Artifact'ta hiç bulunamadığını biliyorsak raw'a sessiz düş (uyarı gösterme)
+                warn = not (USE_ARTIFACT and art_path is None and path in CANDIDATE_RECS)
+                recs = load_csv(path, warn_on_artifact_fail=warn)
+    
+                # GEOID hizası + tarih/saat filtre
                 recs["GEOID"] = recs.get("GEOID", pd.Series([None]*len(recs))).apply(to_tract11)
-                recs["date"] = pd.to_datetime(recs["date"], errors="coerce").dt.date
+                if "date" in recs.columns:
+                    recs["date"] = pd.to_datetime(recs["date"], errors="coerce").dt.date
+                else:
+                    # Tarih kolonu yoksa bugüne at; filtre yine çalışır (boş kalabilir)
+                    recs["date"] = sel_date
+    
+                if "hour_range" not in recs.columns:
+                    # Bazı dosyalarda farklı isim olabilir; yoksa tüm saatlere yayılmış kabul edilir
+                    recs["hour_range"] = hour
+    
                 fr = recs[(recs["date"] == sel_date) & (recs["hour_range"] == hour)].copy()
+                if fr.empty:
+                    continue
+    
+                st.caption(f"Kullanılan dosya: `{path}`")
                 st.dataframe(fr.head(200))
                 rec_loaded = True
                 break
             except Exception as e:
                 last_err = e
+    
         if not rec_loaded:
-            st.info(f"Devriye önerileri okunamadı: {last_err}")
-
-    with st.expander("📈 Model Metrikleri"):
-        try:
-            m = load_csv(PATH_METRICS)
-            st.dataframe(m)
-        except Exception as e:
-            st.info(f"Metrikler yüklenemedi: {e}")
-
+            if art_path is None and USE_ARTIFACT:
+                st.info("Artifact'ta `patrol_recs*.csv` bulunamadı; raw/commit’te de dosya görünmüyor.")
+            else:
+                st.info(f"Devriye önerileri yüklenemedi. Son hata: {last_err}")
 # ============================
 # 🛠 Operasyonel (src/* kullanır)
 # ============================
