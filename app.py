@@ -128,6 +128,25 @@ def list_artifact_paths() -> list[str]:
     except Exception:
         return []
 
+def find_latest_sf_crime_csv() -> str | None:
+    """
+    Artifact içinde crime_data/sf_crime_XX.csv dosyalarından en büyük numaralı olanı döndürür.
+    Örn: sf_crime_09.csv, sf_crime_52.csv ... -> en büyüğü seçilir.
+    """
+    names = list_artifact_paths()
+    if not names:
+        return None
+    picks = []
+    for n in names:
+        m = re.search(r"(?:^|/)crime_data/sf_crime_(\d+)\.csv$", n)
+        if m:
+            picks.append((int(m.group(1)), n))
+    if not picks:
+        return None
+    picks.sort(reverse=True)  # en büyük numara başa
+    return picks[0][1]
+
+
 def find_in_artifact(candidates: list[str]) -> str | None:
     """
     Artifact içinde aday dosya isimlerinden birini bulur.
@@ -268,8 +287,8 @@ def _pick_top3_from_wide(row_or_series: pd.Series) -> str:
 def _enrich_top3_crimes(df_top: pd.DataFrame, hour_label: str) -> pd.Series:
     """
     df_top'taki GEOID'ler için top-3 crime karışımını üretir.
-    Saat etiketlerini normalize eder; wide (type_*/prob_*) ya da long (type/category) formatını destekler.
-    Dosya yoksa veya eşleşme çıkmazsa '' döner.
+    Saat etiketlerini normalize eder; wide (type_*/prob_*/p_*) ya da
+    long (type/category/crime_type/offense) formatını destekler.
     """
     target_s, target_e = _canon_hour_window(hour_label)
 
@@ -279,20 +298,27 @@ def _enrich_top3_crimes(df_top: pd.DataFrame, hour_label: str) -> pd.Series:
         except Exception:
             return None
 
-    # Artifact’ta gerçek yolu bulup ekleyebilmek için varsa onu al
-    candidates = [
+    # ---- Aday kaynaklar: artifact'ta varsa en güncel sf_crime_*.csv'yi öne al
+    from_path = []
+    if USE_ARTIFACT:
+        latest_sf = find_latest_sf_crime_csv()
+        if latest_sf:
+            from_path.append(latest_sf)
+
+    # Raw/commit için de bilinen isimleri deneriz (sende sf_crime_09.csv var)
+    known_raw = [
+        "crime_data/sf_crime_09.csv",
         "crime_data/sf_crime_50.csv",
         "crime_data/sf_crime_52.csv",
         "crime_data/patrol_recs_multi.csv",
         "crime_data/patrol_recs.csv",
     ]
-    from_path = []
-    art_hit = find_in_artifact(candidates) if USE_ARTIFACT else None
-    if art_hit:
-        from_path.append(art_hit)
-    from_path.extend(candidates)
+    # artifact'ta denk gelinen şey farklı klasördeyse yine de dener
+    for k in known_raw:
+        if k not in from_path:
+            from_path.append(k)
 
-    # Her kaynaktan dene (ilk bulunanla döneceğiz)
+    # ---- Her kaynaktan sırayla dene
     for path in from_path:
         df = load_candidate(path)
         if df is None or df.empty or "GEOID" not in df.columns:
@@ -301,7 +327,7 @@ def _enrich_top3_crimes(df_top: pd.DataFrame, hour_label: str) -> pd.Series:
         df = df.copy()
         df["GEOID"] = df["GEOID"].astype(str).apply(to_tract11)
 
-        # Saat filtresi (esnek)
+        # Saat filtresi (varsa hour_range üzerinden kesişime bak)
         sub = df
         if "hour_range" in df.columns:
             s_e = df["hour_range"].map(_canon_hour_window)
@@ -310,18 +336,23 @@ def _enrich_top3_crimes(df_top: pd.DataFrame, hour_label: str) -> pd.Series:
             mask = [_range_overlaps(target_s, target_e, int(s_vals.iat[i]), int(e_vals.iat[i])) for i in range(len(df))]
             sub = df[pd.Series(mask, index=df.index)]
             if sub.empty:
-                sub = df  # saat uyuşmadı: tüm saatlere gevşet
+                sub = df  # saat uyuşmadıysa gevşet
 
-        # ---- Wide format var mı?
+        # --- WIDE format mı? (olasılık kolonları)
         num_cols = [c for c in sub.columns if c not in {"GEOID","date","hour","hour_range","lat","lon"}]
         wide_cols = [c for c in num_cols if re.match(r"^(type_|prob_|p_)", str(c), flags=re.I)]
-        wide_cols = [c for c in wide_cols if pd.api.types.is_numeric_dtype(sub[c])]
+        # metin gelmiş olabilir -> numeriğe çevir
+        for c in list(wide_cols):
+            sub[c] = pd.to_numeric(sub[c], errors="coerce")
+        wide_cols = [c for c in wide_cols if pd.api.types.is_numeric_dtype(sub[c]) and sub[c].notna().any()]
+
         if wide_cols:
             agg = sub.groupby("GEOID")[wide_cols].mean(numeric_only=True)
             return df_top["GEOID"].map(lambda g: _pick_top3_from_wide(agg.loc[g]) if g in agg.index else "")
 
-        # ---- Long format var mı?
-        type_col = next((c for c in ["type","Type","category","Category","crime_type"] if c in sub.columns), None)
+        # --- LONG format mı? (kategori kolonu)
+        type_candidates = ["type","Type","category","Category","crime_type","crime","offense","offense_type"]
+        type_col = next((c for c in type_candidates if c in sub.columns), None)
         if type_col:
             sub[type_col] = sub[type_col].astype(str).str.strip().str.title()
             cnt = sub.groupby(["GEOID", type_col]).size().rename("cnt").reset_index()
@@ -336,7 +367,7 @@ def _enrich_top3_crimes(df_top: pd.DataFrame, hour_label: str) -> pd.Series:
 
             return df_top["GEOID"].map(pick)
 
-    # Hiçbir kaynaktan üretemediysek:
+    # Her şey başarısızsa boş dön
     return pd.Series([""] * len(df_top), index=df_top.index)
 
 # ----------------- UI -----------------
