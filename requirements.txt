@@ -6,3 +6,7 @@ numpy
 geopandas
 shapely
 pyproj
+joblib
+scikit-learn
+folium
+streamlit-folium
