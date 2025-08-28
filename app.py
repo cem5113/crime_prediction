@@ -33,9 +33,17 @@ USE_ARTIFACT  = _to_bool(st.secrets.get("USE_ARTIFACT", True), True)
 PATH_RISK       = "crime_data/risk_hourly.csv"
 CANDIDATE_RECS  = ["crime_data/patrol_recs_multi.csv", "crime_data/patrol_recs.csv"]
 PATH_METRICS    = "crime_data/metrics_stacking.csv"
-PATH_GEOJSON    = "crime_data/sf_census_blocks_with_population.geojson"  # isim blok dese de içerik tract olabilir
+PATH_GEOJSON    = "crime_data/sf_census_blocks_with_population.geojson"
 
 # ----------------- Yardımcılar -----------------
+def digits_only(x) -> str:
+    if pd.isna(x): return ""
+    return re.sub(r"\D", "", str(x))
+
+def to_tract11(x) -> str:
+    d = digits_only(x)
+    return (d[:11] if len(d) >= 11 else d.zfill(11))
+
 def _retry_get(url: str, headers: dict | None = None, timeout: int = 60, retries: int = 2) -> requests.Response:
     last_err = None
     for i in range(retries + 1):
@@ -59,8 +67,12 @@ def fetch_artifact_zip() -> zipfile.ZipFile:
     if not GITHUB_TOKEN:
         raise RuntimeError("GITHUB_TOKEN yok; artifact indirilemez.")
     s = requests.Session()
-    s.headers.update({"Authorization": f"Bearer {GITHUB_TOKEN}", "Accept": "application/vnd.github+json"})
-    resp = _retry_get(f"https://api.github.com/repos/{REPO}/actions/artifacts?per_page=100", headers=s.headers, timeout=60)
+    s.headers.update({
+        "Authorization": f"Bearer {GITHUB_TOKEN}",
+        "Accept": "application/vnd.github+json"
+    })
+    resp = _retry_get(f"https://api.github.com/repos/{REPO}/actions/artifacts?per_page=100",
+                      headers=s.headers, timeout=60)
     arts = [a for a in resp.json().get("artifacts", []) if a["name"] == ARTIFACT_NAME and not a["expired"]]
     if not arts:
         raise RuntimeError("Uygun artifact bulunamadı.")
@@ -78,8 +90,10 @@ def list_artifact_paths() -> list[str]:
 
 def _resolve_inner_path(inner_path: str) -> str:
     names = list_artifact_paths()
-    if not names: return inner_path
-    if inner_path in names: return inner_path
+    if not names:
+        return inner_path
+    if inner_path in names:
+        return inner_path
     suffix = inner_path.split("/")[-1]
     candidates = [n for n in names if n.endswith("/"+suffix) or n.endswith(suffix)]
     candidates.sort(key=lambda x: (0 if x.startswith("crime_data/") else 1, len(x)))
@@ -100,16 +114,8 @@ def load_csv(inner_path: str) -> pd.DataFrame:
             st.warning(f"Artifact okunamadı ({e}). raw moda geçiliyor…")
     return pd.read_csv(io.BytesIO(read_raw(inner_path)))
 
-def _detect_geoid_col(cols: list[str]) -> str | None:
-    cand = ["GEOID", "GEOID10", "GEOID20", "geoid", "geoid10", "geoid20"]
-    for c in cand:
-        if c in cols: return c
-    # bazı dosyalarda 'geoid' property içinde olabilir, yoksa None
-    return None
-
 @st.cache_resource(ttl=900)
 def load_geojson_gdf() -> gpd.GeoDataFrame:
-    """GeoJSON'u yükle, GEOID kolonunu normalize et, genişliği session'a yaz."""
     try:
         if USE_ARTIFACT:
             gj = json.loads(_read_from_artifact(PATH_GEOJSON).decode("utf-8"))
@@ -119,18 +125,7 @@ def load_geojson_gdf() -> gpd.GeoDataFrame:
         st.error(f"GeoJSON okunamadı: {e}")
         raise
     gdf = gpd.GeoDataFrame.from_features(gj["features"], crs="EPSG:4326")
-    geocol = _detect_geoid_col(list(gdf.columns))
-    if geocol is None:
-        st.warning("GeoJSON içinde GEOID alanı bulunamadı; index kullanılacak (eşleşme düşebilir).")
-        gdf["GEOID"] = gdf.index.astype(str)
-    else:
-        if geocol != "GEOID":
-            gdf["GEOID"] = gdf[geocol].astype(str)
-    # genişlik tespiti ve session'a koy
-    width = int(gdf["GEOID"].astype(str).str.len().max())
-    st.session_state["GEOID_WIDTH"] = width
-    # normalize: sadece rakamlar ve sıfır doldurma
-    gdf["GEOID"] = gdf["GEOID"].apply(lambda x: re.sub(r"\D", "", str(x))[:width].zfill(width))
+    # Orijinal GEOID’i koru; tract11 ayrıca üretilecek
     return gdf
 
 @st.cache_data(ttl=900)
@@ -140,104 +135,28 @@ def load_geojson_dict() -> dict:
     return json.loads(read_raw(PATH_GEOJSON).decode("utf-8"))
 
 @st.cache_data(ttl=900)
-def centroids_from_geojson() -> pd.DataFrame:
+def centroids_tract11_from_geojson() -> pd.DataFrame:
+    """
+    GeoJSON (block group) -> representative point -> TRACT11'e agregasyon (tek satır / tract).
+    """
     gdf = load_geojson_gdf()
-    # tract/Block karışsa bile representative_point daha stabil
+    # Representative point (poligon içi garanti nokta), WGS84'e geri dön
     try:
-        gg = gdf.to_crs(3857)
-        pts = gg.representative_point().to_crs(4326)
-        return pd.DataFrame({"GEOID": gdf["GEOID"].astype(str), "lat": pts.y.values, "lon": pts.x.values})
+        pts = gdf.to_crs(3857).representative_point().to_crs(4326)
+        lat = pts.y.values
+        lon = pts.x.values
     except Exception:
-        c = gdf.copy()
-        c["centroid"] = c.geometry.centroid
-        return pd.DataFrame({"GEOID": c["GEOID"].astype(str), "lat": c["centroid"].y, "lon": c["centroid"].x})
+        c = gdf.geometry.centroid
+        lat, lon = c.y.values, c.x.values
 
-def _len_mode(s: pd.Series) -> int:
-    s = s.dropna().astype(str)
-    if s.empty: return 0
-    return int(s.str.len().mode().iloc[0])
+    geo_raw = gdf["GEOID"] if "GEOID" in gdf.columns else pd.Series([""]*len(gdf))
+    tract11 = geo_raw.astype(str).apply(to_tract11)
 
-def _only_digits(s: pd.Series) -> pd.Series:
-    return s.astype(str).str.replace(r"\D", "", regex=True)
-
-def smart_merge_by_geoid(df: pd.DataFrame, cent: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
-    """
-    GEOID akıllı birleştirme:
-    1) Geo 12/15 hane (BG/Block) + Risk 10/11 hane ise: T=11 (tract) üzerinden eşleştir
-       - Risk: zfill(11)
-       - Geo:  first 11 hane
-    2) Tam uzunluk eşleşmesi (zfill ile)
-    3) Prefix (min uzunluk) fallback
-    """
-    info = {}
-    D = df.copy()
-    C = cent.copy()
-
-    D["GEOID_raw"] = _only_digits(D["GEOID"])
-    C["GEOID_raw"] = _only_digits(C["GEOID"])
-
-    lenD = _len_mode(D["GEOID_raw"])
-    lenC = _len_mode(C["GEOID_raw"])
-    info["len_risk_mode"] = lenD
-    info["len_cent_mode"] = lenC
-
-    # --- 1) Tract-11 hizası: Geo=12/15 ve Risk=10/11 ise özel yol ---
-    if (lenC in (12, 15)) and (lenD in (10, 11)):
-        T = 11
-        Dkey = D["GEOID_raw"].str.zfill(T).str[-T:]    # 10 hane ise başa '0' eklenir -> 11 hane
-        Ckey = C["GEOID_raw"].str[:T].str.zfill(T)     # Geo'nun ilk 11 hanesi (tract)
-        view = D.copy()
-        view["__key"] = Dkey
-        C11 = C.copy()
-        C11["__key"] = Ckey
-        view = view.merge(C11[["__key", "lat", "lon"]], on="__key", how="left").drop(columns="__key")
-        matches = int(view["lat"].notna().sum())
-        info["join_mode"] = "tract11_from_block"
-        info["target_len"] = T
-        info["matches_tract11"] = matches
-        view["GEOID"] = Dkey
-        if matches > 0:
-            return view.drop(columns=["GEOID_raw"]), info
-        # eşleşme yoksa devam edip diğer modları deneriz
-
-    # --- 2) Tam uzunluk eşleşmesi ---
-    Dnorm = D["GEOID_raw"].str[:lenD].str.zfill(lenD)
-    Cnorm = C["GEOID_raw"].str[:lenC].str.zfill(lenC)
-    view_exact = D.copy()
-    view_exact["__key"] = Dnorm
-    C_exact = C.copy()
-    C_exact["__key"] = Cnorm
-    view_exact = view_exact.merge(C_exact[["__key", "lat", "lon"]], on="__key", how="left").drop(columns="__key")
-    exact_matches = int(view_exact["lat"].notna().sum())
-    info["matches_exact"] = exact_matches
-    if exact_matches > 0:
-        info["join_mode"] = "exact"
-        view_exact["GEOID"] = Dnorm
-        return view_exact.drop(columns=["GEOID_raw"]), info
-
-    # --- 3) Prefix fallback: min uzunluk ---
-    L = min(lenD, lenC)
-    if L <= 0:
-        view = D.copy()
-        view["lat"] = pd.NA
-        view["lon"] = pd.NA
-        info["join_mode"] = "failed"
-        info["matches_prefix"] = 0
-        return view.drop(columns=["GEOID_raw"]), info
-
-    Dpref = D["GEOID_raw"].str[:L].str.zfill(L)
-    Cpref = C["GEOID_raw"].str[:L].str.zfill(L)
-    view_pref = D.copy()
-    view_pref["__key"] = Dpref
-    C_pref = C.copy()
-    C_pref["__key"] = Cpref
-    view_pref = view_pref.merge(C_pref[["__key", "lat", "lon"]], on="__key", how="left").drop(columns="__key")
-    pref_matches = int(view_pref["lat"].notna().sum())
-    info["join_mode"] = "prefix"
-    info["prefix_len"] = L
-    info["matches_prefix"] = pref_matches
-    view_pref["GEOID"] = Dpref
-    return view_pref.drop(columns=["GEOID_raw"]), info
+    cent = pd.DataFrame({"TRACT11": tract11, "lat": lat, "lon": lon})
+    # Bir tract’ta birden fazla BG olabilir → tekille
+    cent = cent.groupby("TRACT11", as_index=False).agg({"lat":"mean", "lon":"mean"})
+    cent = cent.rename(columns={"TRACT11":"GEOID"})
+    return cent
 
 # ----------------- UI -----------------
 st.set_page_config(page_title="SF Crime Dashboard", layout="wide")
@@ -272,13 +191,18 @@ with tab_dash:
         st.error(f"`{PATH_RISK}` okunamadı: {e}")
         st.stop()
 
-    # Saat seçenekleri
+    # GEOID → TRACT11 hizalama
+    risk_df["GEOID"] = risk_df.get("GEOID", pd.Series([None]*len(risk_df)))
+    risk_df["GEOID"] = risk_df["GEOID"].apply(to_tract11)
     risk_df["date"] = pd.to_datetime(risk_df["date"], errors="coerce").dt.date
+
     def _hour_key(h):
-        try: return int(str(h).split("-")[0])
+        try: return int(str(h).split("-")[0].split(":")[0])
         except: return 0
+
     hours = sorted(risk_df["hour_range"].dropna().unique().tolist(), key=_hour_key)
     hour = st.select_slider("Saat aralığı", options=hours, value=hours[0] if hours else None)
+
     if hour is None:
         st.warning("Saat aralığı bulunamadı.")
         st.stop()
@@ -288,27 +212,14 @@ with tab_dash:
     if f.empty:
         st.warning("Seçilen tarih/saat için kayıt yok. Başka seçim dener misin?")
         st.stop()
+
     f = f.sort_values("risk_score", ascending=False).head(int(top_k))
 
-    # GEOID → centroid (akıllı birleştirme)
-    cent = centroids_from_geojson()
-    before = len(f)
-    view_raw, merge_info = smart_merge_by_geoid(f.rename(columns={"GEOID":"GEOID"}), cent)
-    # view_raw'ta 'lat/lon' olabilir ama bazı satırlar NaN
-    matched = int(view_raw["lat"].notna().sum())
-    view = view_raw.dropna(subset=["lat","lon"]).copy()
-
-    # Uyarı / bilgi
-    if matched == 0:
-        st.warning(
-            f"Eşleşen centroid bulunamadı (seçili kayıt: {before}, eşleşen: {matched}). "
-            f"Join modu: {merge_info.get('join_mode')} • "
-            f"risk_len≈{merge_info.get('len_risk_mode')} • geo_len≈{merge_info.get('len_cent_mode')} • "
-            f"prefix_len={merge_info.get('prefix_len', '-')}"
-        )
-        # Teşhis için ilk 10 GEOID örneği
-        st.code("risk GEOID örnekleri: " + ", ".join(_only_digits(f['GEOID']).astype(str).str[:20].head(10).tolist()))
-        st.code("geo  GEOID örnekleri: " + ", ".join(_only_digits(cent['GEOID']).astype(str).str[:20].head(10).tolist()))
+    # GEOID → centroid (TRACT11)
+    cent = centroids_tract11_from_geojson()
+    view = f.merge(cent, on="GEOID", how="left")
+    matched = int(view["lat"].notna().sum())
+    view = view.dropna(subset=["lat","lon"]).reset_index(drop=True)
 
     # Renk/size
     level_colors = {
@@ -317,52 +228,57 @@ with tab_dash:
         "medium":   [255, 215, 0],
         "low":      [34, 139, 34],
     }
+
     if "risk_level" in view.columns and view["risk_level"].notna().any():
         rl = view["risk_level"].astype(str).str.strip().str.lower()
         colors = rl.map(level_colors)
         default_color = [100, 100, 100]
-        colors = colors.apply(lambda c: c if isinstance(c, (list, tuple)) else default_color)
+        colors = colors.apply(lambda c: list(map(int, c)) if isinstance(c, (list, tuple)) else default_color)
     else:
-        vals = (view["risk_score"].fillna(0).clip(0, 1) * 255).astype(int)
-        colors = vals.apply(lambda v: [v, 0, 255 - v])
+        vals = (view["risk_score"].fillna(0).clip(0, 1) * 255).round().astype(int)
+        colors = vals.apply(lambda v: [int(v), 0, int(255 - v)])
+
     view["color"] = colors
-    view["radius"] = (view["risk_score"].fillna(0).clip(0, 1) * 40 + 10).astype(int)
+    view["radius"] = (view["risk_score"].fillna(0).clip(0, 1) * 40 + 10).round().astype(int)
 
     st.subheader(f"📍 {sel_date} — {hour} — Top {len(view)} GEOID")
     mcol1, mcol2, mcol3 = st.columns(3)
-    with mcol1: st.metric("Seçilen kayıt", before)
-    with mcol2: st.metric("Eşleşen centroid", matched)
-    with mcol3: st.metric("Ortalama risk", round(float(view["risk_score"].mean()) if len(view) else 0.0, 3))
+    with mcol1:
+        st.metric("Seçilen kayıt", len(f))
+    with mcol2:
+        st.metric("Eşleşen centroid", matched)
+    with mcol3:
+        st.metric("Ortalama risk", round(float(view["risk_score"].mean()) if len(view) else 0.0, 3))
+
     st.dataframe(view[["GEOID","risk_score","risk_level","risk_decile"]].reset_index(drop=True))
 
-    # Harita (pydeck) — sadece eşleşme varsa çiz
-    if matched > 0:
-        geojson_dict = load_geojson_dict()
-        initial = pdk.ViewState(
-            latitude=float(view["lat"].mean()) if not view.empty else 37.7749,
-            longitude=float(view["lon"].mean()) if not view.empty else -122.4194,
-            zoom=11, pitch=30
-        )
-        layer_points = pdk.Layer(
-            "ScatterplotLayer",
-            data=view,
-            get_position=["lon","lat"],
-            get_radius="radius",
-            get_fill_color="color",
-            pickable=True
-        )
-        layer_poly = pdk.Layer(
-            "GeoJsonLayer",
-            data=geojson_dict,
-            stroked=False, filled=False,
-            get_line_color=[150,150,150],
-            line_width_min_pixels=1
-        )
-        st.pydeck_chart(pdk.Deck(
-            layers=[layer_poly, layer_points],
-            initial_view_state=initial,
-            tooltip={"text":"GEOID: {GEOID}\nRisk: {risk_score:.3f} ({risk_level})"}
-        ))
+    # Harita (pydeck)
+    geojson_dict = load_geojson_dict()
+    initial = pdk.ViewState(
+        latitude=float(view["lat"].mean()) if not view.empty else 37.7749,
+        longitude=float(view["lon"].mean()) if not view.empty else -122.4194,
+        zoom=11, pitch=30
+    )
+    layer_points = pdk.Layer(
+        "ScatterplotLayer",
+        data=view,
+        get_position=["lon","lat"],
+        get_radius="radius",
+        get_fill_color="color",
+        pickable=True
+    )
+    layer_poly = pdk.Layer(
+        "GeoJsonLayer",
+        data=geojson_dict,
+        stroked=False, filled=False,
+        get_line_color=[150,150,150],
+        line_width_min_pixels=1
+    )
+    st.pydeck_chart(pdk.Deck(
+        layers=[layer_poly, layer_points],
+        initial_view_state=initial,
+        tooltip={"html":"<b>GEOID</b>: {GEOID}<br/><b>Risk</b>: {risk_score} ({risk_level})"}
+    ))
 
     st.divider()
     with st.expander("🚓 Devriye Önerileri (patrol_recs*.csv)"):
@@ -371,14 +287,10 @@ with tab_dash:
         for path in CANDIDATE_RECS:
             try:
                 recs = load_csv(path)
-                # Aynı akıllı eşleştirme mantığıyla GEOID uyumu
+                recs["GEOID"] = recs.get("GEOID", pd.Series([None]*len(recs))).apply(to_tract11)
                 recs["date"] = pd.to_datetime(recs["date"], errors="coerce").dt.date
                 fr = recs[(recs["date"] == sel_date) & (recs["hour_range"] == hour)].copy()
-                if not fr.empty:
-                    fr_view, _ = smart_merge_by_geoid(fr.rename(columns={"GEOID":"GEOID"}), cent)
-                    st.dataframe(fr_view.head(200))
-                else:
-                    st.info("Bu tarih/saat için devriye önerisi yok.")
+                st.dataframe(fr.head(200))
                 rec_loaded = True
                 break
             except Exception as e:
@@ -421,20 +333,17 @@ with tab_ops:
         cols_show = [c for c in ["rank","hour_range","GEOID","priority_score","p_crime","lcb","ucb","top3_crime_types"] if c in df_top.columns]
         st.dataframe(df_top[cols_show])
 
+        # Harita (Folium)
         try:
             cent_src = load_centroids_src()
         except Exception:
             cent_src = None
         if cent_src is None or cent_src.empty:
-            cent_src = centroids_from_geojson()
+            # GeoJSON’dan tract-11 centroidleri (fallback)
+            cent_src = centroids_tract11_from_geojson()
 
         try:
-            mp = draw_map(
-                df_top,
-                cent_src,
-                popup_cols=["GEOID","hour_range","p_crime","priority_score","top3_crime_types"],
-                height=560
-            )
+            mp = draw_map(df_top, cent_src, popup_cols=None)  # src/viz.py arayüzü
             if mp is not None:
                 from streamlit_folium import st_folium
                 st_folium(mp, height=560, width=None)
@@ -443,6 +352,7 @@ with tab_ops:
         except Exception as e:
             st.info(f"Harita çizilemedi: {e}")
 
+        # İndirme
         try:
             out_csv = engine.save_topk(df_top)
             st.download_button("CSV indir", data=open(out_csv,"rb").read(),
@@ -470,12 +380,13 @@ with tab_diag:
             st.info("Artifact listelenemedi veya boş.")
     try:
         gdf = load_geojson_gdf()
-        st.write(f"GeoJSON OK — {len(gdf)} geometri (GEOID width≈{int(st.session_state.get('GEOID_WIDTH', 11))})")
-        # GEOID uzunluk dağılımları
-        st.write(
-            "GEOID uzunluk dağılımı (geo):",
-            gdf["GEOID"].astype(str).str.len().value_counts().sort_index().to_dict(),
-        )
+        st.write(f"GeoJSON OK — {len(gdf)} geometri")
+        # Teşhis: örnek GEOID dönüşümleri
+        demo = pd.DataFrame({
+            "geo_GEOID_raw": gdf["GEOID"].astype(str).head(5),
+            "geo_TRACT11": gdf["GEOID"].astype(str).apply(to_tract11).head(5),
+        })
+        st.dataframe(demo)
     except Exception as e:
         st.info(f"GeoJSON teşhis: {e}")
 
