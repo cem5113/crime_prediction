@@ -44,6 +44,24 @@ def to_tract11(x) -> str:
     d = digits_only(x)
     return (d[:11] if len(d) >= 11 else d.zfill(11))
 
+def _parse_hour_width(hr_label: str) -> tuple[int, int]:
+    """'00-03' veya '20:00-22:00' -> (start_hour, width)"""
+    nums = re.findall(r"\d{1,2}", str(hr_label))
+    if len(nums) >= 2:
+        h0, h1 = int(nums[0]), int(nums[1])
+        width = h1 - h0 if h1 >= h0 else (h1 + 24 - h0)
+    elif len(nums) == 1:
+        h0, width = int(nums[0]), 2
+    else:
+        h0, width = 20, 2
+    return max(0, min(23, h0)), max(1, min(6, width))
+
+def _risk_level_from_score(p: float) -> str:
+    if p >= 0.95: return "critical"
+    if p >= 0.85: return "high"
+    if p >= 0.60: return "medium"
+    return "low"
+
 def _retry_get(url: str, headers: dict | None = None, timeout: int = 60, retries: int = 2) -> requests.Response:
     last_err = None
     for i in range(retries + 1):
@@ -125,7 +143,6 @@ def load_geojson_gdf() -> gpd.GeoDataFrame:
         st.error(f"GeoJSON okunamadı: {e}")
         raise
     gdf = gpd.GeoDataFrame.from_features(gj["features"], crs="EPSG:4326")
-    # Orijinal GEOID’i koru; tract11 ayrıca üretilecek
     return gdf
 
 @st.cache_data(ttl=900)
@@ -176,13 +193,19 @@ with tab_dash:
     with colB:
         top_k = st.number_input("Top-K (liste/harita)", 10, 500, 50, 10)
     with colC:
+        # Daha geniş seçim aralığı (bugün ±3 gün)
         try:
             _tmp = load_csv(PATH_RISK).copy()
             _tmp["date"] = pd.to_datetime(_tmp["date"], errors="coerce").dt.date
-            default_date = _tmp["date"].max()
+            data_min = _tmp["date"].min()
+            data_max = _tmp["date"].max()
         except Exception:
-            default_date = dt.date.today()
-        sel_date = st.date_input("Tarih", default_date or dt.date.today())
+            data_min = data_max = dt.date.today()
+        today = dt.date.today()
+        min_d = min(data_min, today - dt.timedelta(days=3))
+        max_d = max(data_max, today + dt.timedelta(days=3))
+        default_date = today if today >= data_min else data_max
+        sel_date = st.date_input("Tarih", value=default_date, min_value=min_d, max_value=max_d)
 
     # Risk tablosu
     try:
@@ -207,12 +230,34 @@ with tab_dash:
         st.warning("Saat aralığı bulunamadı.")
         st.stop()
 
-    # Filtre + Top-K
+    # Filtre
     f = risk_df[(risk_df["date"] == sel_date) & (risk_df["hour_range"] == hour)].copy()
-    if f.empty:
-        st.warning("Seçilen tarih/saat için kayıt yok. Başka seçim dener misin?")
-        st.stop()
 
+    # Eğer seçilen tarihte pipeline çıktısı yoksa — Operasyonel fallback
+    if f.empty:
+        if HAS_SRC:
+            h0, w = _parse_hour_width(hour)
+            hour_label_engine = to_hour_range(h0, w)
+            with st.spinner("Bu tarih için pipeline çıktısı yok. Anlık tahmin üretiliyor…"):
+                engine = InferenceEngine()
+                pred = engine.predict_topk(hour_label=hour_label_engine, topk=int(top_k))
+            # risk tablosu formatına çevir
+            f = pred.rename(columns={"p_crime": "risk_score"})[["GEOID", "hour_range", "risk_score"]].copy()
+            f["GEOID"] = f["GEOID"].apply(to_tract11)
+            f["risk_level"] = f["risk_score"].apply(_risk_level_from_score)
+            try:
+                dec = pd.qcut(f["risk_score"], 10, labels=False, duplicates="drop")
+                f["risk_decile"] = (dec.max() - dec).fillna(0).astype(int) + 1
+            except Exception:
+                f["risk_decile"] = 10
+            f["date"] = sel_date
+            f["hour_range"] = hour
+            st.info("Seçilen tarih için **Operasyonel motor** kullanıldı (pipeline çıkışı yok).")
+        else:
+            st.warning("Seçilen tarih/saat için kayıt yok ve operasyonel motor devrede değil.")
+            st.stop()
+
+    # Top-K
     f = f.sort_values("risk_score", ascending=False).head(int(top_k))
 
     # GEOID → centroid (TRACT11)
@@ -252,59 +297,11 @@ with tab_dash:
 
     st.dataframe(view[["GEOID","risk_score","risk_level","risk_decile"]].reset_index(drop=True))
 
-# Harita (pydeck) — yalnızca nokta varsa çiz + JSON güvenli veri
-if matched > 0:
-    # Pydeck'e sade ve serileştirilebilir veri ver
-    point_cols = ["GEOID", "lat", "lon", "risk_score", "risk_level", "color", "radius"]
-    point_df = view[point_cols].copy()
-
-    # Türleri normalize et
-    point_df["GEOID"] = point_df["GEOID"].astype(str)
-    point_df["risk_level"] = point_df["risk_level"].fillna("").astype(str)
-    point_df["risk_score"] = pd.to_numeric(point_df["risk_score"], errors="coerce").fillna(0.0).astype(float)
-    point_df["lat"] = pd.to_numeric(point_df["lat"], errors="coerce").astype(float)
-    point_df["lon"] = pd.to_numeric(point_df["lon"], errors="coerce").astype(float)
-    point_df["radius"] = pd.to_numeric(point_df["radius"], errors="coerce").fillna(10).astype(int)
-    point_df["color"] = point_df["color"].apply(
-        lambda c: [int(c[0]), int(c[1]), int(c[2])] if isinstance(c, (list, tuple)) else [100, 100, 100]
-    )
-
-    geojson_dict = load_geojson_dict()
-    initial = pdk.ViewState(
-        latitude=float(point_df["lat"].mean()),
-        longitude=float(point_df["lon"].mean()),
-        zoom=11, pitch=30
-    )
-
-    layer_points = pdk.Layer(
-        "ScatterplotLayer",
-        data=point_df,                     # DataFrame veriyoruz ama sadece güvenli kolonlar
-        get_position=["lon","lat"],
-        get_radius="radius",
-        get_fill_color="color",
-        pickable=True,
-    )
-    layer_poly = pdk.Layer(
-        "GeoJsonLayer",
-        data=geojson_dict,
-        stroked=False, filled=False,
-        get_line_color=[150,150,150],
-        line_width_min_pixels=1,
-    )
-
-    st.pydeck_chart(pdk.Deck(
-        layers=[layer_poly, layer_points],
-        initial_view_state=initial,
-        tooltip={"text": "GEOID: {GEOID}\nRisk: {risk_score} ({risk_level})"}
-    ))
-else:
-    st.info("Haritada gösterecek nokta bulunamadı (eşleşen centroid yok).")
-    # Harita (pydeck) — yalnızca nokta varsa çiz + JSON güvenli veri
+    # Harita (pydeck) — sadece nokta varsa çiz + JSON güvenli veri
     if matched > 0:
-        # Pydeck'e sade ve serileştirilebilir veri ver
         point_cols = ["GEOID", "lat", "lon", "risk_score", "risk_level", "color", "radius"]
         point_df = view[point_cols].copy()
-    
+
         # Türleri normalize et
         point_df["GEOID"] = point_df["GEOID"].astype(str)
         point_df["risk_level"] = point_df["risk_level"].fillna("").astype(str)
@@ -315,17 +312,17 @@ else:
         point_df["color"] = point_df["color"].apply(
             lambda c: [int(c[0]), int(c[1]), int(c[2])] if isinstance(c, (list, tuple)) else [100, 100, 100]
         )
-    
+
         geojson_dict = load_geojson_dict()
         initial = pdk.ViewState(
             latitude=float(point_df["lat"].mean()),
             longitude=float(point_df["lon"].mean()),
             zoom=11, pitch=30
         )
-    
+
         layer_points = pdk.Layer(
             "ScatterplotLayer",
-            data=point_df,                     # DataFrame veriyoruz ama sadece güvenli kolonlar
+            data=point_df,
             get_position=["lon","lat"],
             get_radius="radius",
             get_fill_color="color",
@@ -338,7 +335,7 @@ else:
             get_line_color=[150,150,150],
             line_width_min_pixels=1,
         )
-    
+
         st.pydeck_chart(pdk.Deck(
             layers=[layer_poly, layer_points],
             initial_view_state=initial,
@@ -346,6 +343,31 @@ else:
         ))
     else:
         st.info("Haritada gösterecek nokta bulunamadı (eşleşen centroid yok).")
+
+    st.divider()
+    with st.expander("🚓 Devriye Önerileri (patrol_recs*.csv)"):
+        rec_loaded = False
+        last_err = None
+        for path in CANDIDATE_RECS:
+            try:
+                recs = load_csv(path)
+                recs["GEOID"] = recs.get("GEOID", pd.Series([None]*len(recs))).apply(to_tract11)
+                recs["date"] = pd.to_datetime(recs["date"], errors="coerce").dt.date
+                fr = recs[(recs["date"] == sel_date) & (recs["hour_range"] == hour)].copy()
+                st.dataframe(fr.head(200))
+                rec_loaded = True
+                break
+            except Exception as e:
+                last_err = e
+        if not rec_loaded:
+            st.info(f"Devriye önerileri okunamadı: {last_err}")
+
+    with st.expander("📈 Model Metrikleri"):
+        try:
+            m = load_csv(PATH_METRICS)
+            st.dataframe(m)
+        except Exception as e:
+            st.info(f"Metrikler yüklenemedi: {e}")
 
 # ============================
 # 🛠 Operasyonel (src/* kullanır)
@@ -425,8 +447,8 @@ with tab_diag:
         st.write(f"GeoJSON OK — {len(gdf)} geometri")
         # Teşhis: örnek GEOID dönüşümleri
         demo = pd.DataFrame({
-            "geo_GEOID_raw": gdf["GEOID"].astype(str).head(5),
-            "geo_TRACT11": gdf["GEOID"].astype(str).apply(to_tract11).head(5),
+            "geo_GEOID_raw": gdf["GEOID"].astype(str).head(5) if "GEOID" in gdf.columns else pd.Series([""]*5),
+            "geo_TRACT11": (gdf["GEOID"].astype(str).apply(to_tract11).head(5) if "GEOID" in gdf.columns else pd.Series([""]*5)),
         })
         st.dataframe(demo)
     except Exception as e:
