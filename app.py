@@ -226,6 +226,67 @@ def centroids_tract11_from_geojson() -> pd.DataFrame:
     cent = cent.rename(columns={"TRACT11":"GEOID"})
     return cent
 
+def _enrich_top3_crimes(df_top: pd.DataFrame, hour_label: str) -> pd.Series:
+    """
+    df_top'taki GEOID'ler için top-3 crime karışımını üretir.
+    Heuristik: Önce wide format (type_* kolonları), yoksa long format (type/category kolonu) dener.
+    Bulamazsa boş string döner.
+    """
+    candidates = ["crime_data/sf_crime_50.csv", "crime_data/sf_crime_52.csv"]
+    for path in candidates:
+        try:
+            sf = load_csv(path, warn_on_artifact_fail=False)
+        except Exception:
+            continue
+        if sf is None or sf.empty:
+            continue
+
+        # GEOID'leri tract-11'e indir
+        if "GEOID" not in sf.columns:
+            continue
+        sf = sf.copy()
+        sf["GEOID"] = sf["GEOID"].astype(str).apply(to_tract11)
+
+        # ---- A) Wide format: type_* kolonları
+        type_cols = [c for c in sf.columns if c.lower().startswith("type_")]
+        if type_cols:
+            sub = sf
+            if "hour_range" in sf.columns:
+                sub = sub[sub["hour_range"] == hour_label]
+            agg = sub.groupby("GEOID")[type_cols].mean(numeric_only=True)
+
+            def to_text(s: pd.Series) -> str:
+                if s is None or s.empty:
+                    return ""
+                top = s.sort_values(ascending=False).head(3)
+                parts = [f"{k.replace('type_','').title()}({float(v):.0%})" for k, v in top.items()]
+                return ", ".join(parts)
+
+            return df_top["GEOID"].map(lambda g: to_text(agg.loc[g]) if g in agg.index else "")
+
+        # ---- B) Long format: 'type' / 'category' / 'crime_type' kolonu
+        type_col = next((c for c in ["type", "Type", "category", "Category", "crime_type"] if c in sf.columns), None)
+        if type_col:
+            sub = sf
+            if "hour_range" in sf.columns:
+                sub = sub[sub["hour_range"] == hour_label]
+            # paylaştırma (oran)
+            sub[type_col] = sub[type_col].astype(str).str.strip().str.title()
+            cnt = sub.groupby(["GEOID", type_col]).size().rename("cnt").reset_index()
+            cnt["share"] = cnt.groupby("GEOID")["cnt"].transform(lambda x: x / x.sum())
+            cnt = cnt.sort_values(["GEOID", "share"], ascending=[True, False])
+
+            def pick(g):
+                rows = cnt[cnt["GEOID"] == g].head(3)
+                if rows.empty:
+                    return ""
+                return ", ".join(f"{r[type_col]}({r['share']:.0%})" for _, r in rows.iterrows())
+
+            return df_top["GEOID"].map(pick)
+
+    # hiçbiri bulunamazsa
+    return pd.Series([""] * len(df_top), index=df_top.index)
+
 # ----------------- UI -----------------
 st.set_page_config(page_title="SF Crime Dashboard", layout="wide")
 st.title("SF Crime • Dashboard & Operasyonel")
@@ -499,6 +560,10 @@ with tab_ops:
         with st.spinner("Tahminler üretiliyor..."):
             engine = InferenceEngine()
             df_top = engine.predict_topk(hour_label=hour_label, topk=int(topk_ops))
+        
+        # ⬇⬇⬇ BURAYI EKLE
+        if "top3_crime_types" not in df_top.columns or df_top["top3_crime_types"].astype(str).str.len().fillna(0).eq(0).all():
+            df_top["top3_crime_types"] = _enrich_top3_crimes(df_top, hour_label)
 
         st.subheader("🎯 En Öncelikli Bölgeler")
         cols_show = [c for c in ["rank","hour_range","GEOID","priority_score","p_crime","lcb","ucb","top3_crime_types"] if c in df_top.columns]
