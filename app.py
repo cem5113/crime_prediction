@@ -6,6 +6,16 @@ import geopandas as gpd
 import streamlit as st
 import pydeck as pdk
 
+import sys, pathlib
+ROOT = pathlib.Path(__file__).resolve().parent
+SRC_DIR = ROOT / "src"
+# 'import src.xxx' çalışsın diye repo kökünü sys.path'e koy
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+# İlaveten 'from config import ...' tarzı kullanım için gerekirse src'i de ekleyelim
+if SRC_DIR.exists() and str(SRC_DIR) not in sys.path:
+    sys.path.insert(0, str(SRC_DIR))
+    
 # ----------- (opsiyonel) src modülleri: Operasyonel sekme için ----------
 HAS_SRC = True
 try:
