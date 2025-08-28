@@ -1,6 +1,6 @@
 # app.py
 from __future__ import annotations
-import io, json, zipfile, requests, datetime as dt, os, time
+import io, json, zipfile, requests, datetime as dt, os, time, re
 import pandas as pd
 import geopandas as gpd
 import streamlit as st
@@ -29,18 +29,20 @@ def _to_bool(x, default=True):
     return str(x).strip().lower() in ("1","true","yes","on")
 USE_ARTIFACT  = _to_bool(st.secrets.get("USE_ARTIFACT", True), True)
 
-# Pipeline dosya yolları (hedeflenen mantıksal yollar; zip içinde farklı yerde olabilir)
+# Pipeline dosya yolları
 PATH_RISK       = "crime_data/risk_hourly.csv"
 CANDIDATE_RECS  = ["crime_data/patrol_recs_multi.csv", "crime_data/patrol_recs.csv"]
 PATH_METRICS    = "crime_data/metrics_stacking.csv"
 PATH_GEOJSON    = "crime_data/sf_census_blocks_with_population.geojson"
 
 # ----------------- Yardımcılar -----------------
-def _norm_geoid(s):
-    """GEOID'i stringe çevirip 11 haneye tamamla."""
-    if pd.isna(s): return None
-    s = str(s).strip()
-    return s.zfill(11)
+def _norm_geoid(val, width: int | None = None):
+    """Sadece rakamları al, verilen genişliğe sıfır doldur."""
+    if pd.isna(val): return None
+    s = re.sub(r"\D", "", str(val))
+    if width is None:
+        width = int(st.session_state.get("GEOID_WIDTH", 11))
+    return s[:width].zfill(width)
 
 def _retry_get(url: str, headers: dict | None = None, timeout: int = 60, retries: int = 2) -> requests.Response:
     last_err = None
@@ -62,16 +64,11 @@ def read_raw(path: str) -> bytes:
 
 @st.cache_resource(ttl=900)
 def fetch_artifact_zip() -> zipfile.ZipFile:
-    """Artifact ZIP'i indirir ve açık ZipFile nesnesini döndürür (cache_resource!)."""
     if not GITHUB_TOKEN:
         raise RuntimeError("GITHUB_TOKEN yok; artifact indirilemez.")
     s = requests.Session()
-    s.headers.update({
-        "Authorization": f"Bearer {GITHUB_TOKEN}",
-        "Accept": "application/vnd.github+json"
-    })
-    resp = _retry_get(f"https://api.github.com/repos/{REPO}/actions/artifacts?per_page=100",
-                      headers=s.headers, timeout=60)
+    s.headers.update({"Authorization": f"Bearer {GITHUB_TOKEN}", "Accept": "application/vnd.github+json"})
+    resp = _retry_get(f"https://api.github.com/repos/{REPO}/actions/artifacts?per_page=100", headers=s.headers, timeout=60)
     arts = [a for a in resp.json().get("artifacts", []) if a["name"] == ARTIFACT_NAME and not a["expired"]]
     if not arts:
         raise RuntimeError("Uygun artifact bulunamadı.")
@@ -88,22 +85,15 @@ def list_artifact_paths() -> list[str]:
         return []
 
 def _resolve_inner_path(inner_path: str) -> str:
-    """
-    Zip içinde beklenen yol yoksa, suffix eşleştirerek gerçek yolu bul.
-    Örn: 'crime_data/risk_hourly.csv' yerine 'risk_hourly.csv' varsa onu kullan.
-    """
     names = list_artifact_paths()
-    if not names:
-        return inner_path
-    if inner_path in names:
-        return inner_path
+    if not names: return inner_path
+    if inner_path in names: return inner_path
     suffix = inner_path.split("/")[-1]
     candidates = [n for n in names if n.endswith("/"+suffix) or n.endswith(suffix)]
     candidates.sort(key=lambda x: (0 if x.startswith("crime_data/") else 1, len(x)))
     return candidates[0] if candidates else inner_path
 
 def _read_from_artifact(inner_path: str) -> bytes:
-    """Cache’lenmiş ZipFile içinden dosya oku (ZipFile'ı KAPATMA!)."""
     zf = fetch_artifact_zip()
     real = _resolve_inner_path(inner_path)
     return zf.read(real)
@@ -116,12 +106,17 @@ def load_csv(inner_path: str) -> pd.DataFrame:
             return pd.read_csv(io.BytesIO(data))
         except Exception as e:
             st.warning(f"Artifact okunamadı ({e}). raw moda geçiliyor…")
-    # raw fallback
     return pd.read_csv(io.BytesIO(read_raw(inner_path)))
+
+def _detect_geoid_col(cols: list[str]) -> str | None:
+    cand = ["GEOID", "GEOID10", "GEOID20", "geoid", "geoid10", "geoid20"]
+    for c in cand:
+        if c in cols: return c
+    return None
 
 @st.cache_resource(ttl=900)
 def load_geojson_gdf() -> gpd.GeoDataFrame:
-    """Büyük geometri: resource cache. (parametre alma!)"""
+    """GeoJSON'u yükle, GEOID kolonunu normalize et, genişliği session'a yaz."""
     try:
         if USE_ARTIFACT:
             gj = json.loads(_read_from_artifact(PATH_GEOJSON).decode("utf-8"))
@@ -131,38 +126,37 @@ def load_geojson_gdf() -> gpd.GeoDataFrame:
         st.error(f"GeoJSON okunamadı: {e}")
         raise
     gdf = gpd.GeoDataFrame.from_features(gj["features"], crs="EPSG:4326")
-    if "GEOID" in gdf.columns:
-        gdf["GEOID"] = gdf["GEOID"].map(_norm_geoid)
+    geocol = _detect_geoid_col(list(gdf.columns))
+    if geocol is None:
+        st.warning("GeoJSON içinde GEOID alanı bulunamadı; index kullanılacak (eşleşme düşebilir).")
+        gdf["GEOID"] = gdf.index.astype(str)
+    else:
+        if geocol != "GEOID":
+            gdf["GEOID"] = gdf[geocol].astype(str)
+    # genişlik tespiti ve session'a koy
+    width = int(gdf["GEOID"].astype(str).str.len().max())
+    st.session_state["GEOID_WIDTH"] = width
+    # normalize
+    gdf["GEOID"] = gdf["GEOID"].apply(lambda x: _norm_geoid(x, width))
     return gdf
 
 @st.cache_data(ttl=900)
 def load_geojson_dict() -> dict:
-    """Pydeck GeoJsonLayer için dict halinde ver."""
     if USE_ARTIFACT:
         return json.loads(_read_from_artifact(PATH_GEOJSON).decode("utf-8"))
     return json.loads(read_raw(PATH_GEOJSON).decode("utf-8"))
 
 @st.cache_data(ttl=900)
 def centroids_from_geojson() -> pd.DataFrame:
-    """Parametresiz cache: unhashable param hatasını önler."""
     gdf = load_geojson_gdf()
-    # Poligon içi garanti nokta için representative_point (centroid yerine)
     try:
         gg = gdf.to_crs(3857)
         pts = gg.representative_point().to_crs(4326)
-        return pd.DataFrame({
-            "GEOID": gdf["GEOID"].astype(str),
-            "lat": pts.y.values,
-            "lon": pts.x.values,
-        })
+        return pd.DataFrame({"GEOID": gdf["GEOID"].astype(str), "lat": pts.y.values, "lon": pts.x.values})
     except Exception:
         c = gdf.copy()
         c["centroid"] = c.geometry.centroid
-        return pd.DataFrame({
-            "GEOID": c["GEOID"].astype(str),
-            "lat": c["centroid"].y,
-            "lon": c["centroid"].x,
-        })
+        return pd.DataFrame({"GEOID": c["GEOID"].astype(str), "lat": c["centroid"].y, "lon": c["centroid"].x})
 
 # ----------------- UI -----------------
 st.set_page_config(page_title="SF Crime Dashboard", layout="wide")
@@ -182,7 +176,6 @@ with tab_dash:
     with colB:
         top_k = st.number_input("Top-K (liste/harita)", 10, 500, 50, 10)
     with colC:
-        # risk tablosundaki en taze tarihe defaultla
         try:
             _tmp = load_csv(PATH_RISK).copy()
             _tmp["date"] = pd.to_datetime(_tmp["date"], errors="coerce").dt.date
@@ -198,9 +191,13 @@ with tab_dash:
         st.error(f"`{PATH_RISK}` okunamadı: {e}")
         st.stop()
 
-    # Beklenen kolonlar: GEOID,date,hour_range,risk_score,risk_level,risk_decile
+    # GeoJSON'u yükle ve GEOID genişliğini belirle
+    _gdf = load_geojson_gdf()
+    geoid_width = int(st.session_state.get("GEOID_WIDTH", 11))
+
+    # GEOID normalize (geojson genişliğine göre)
     if "GEOID" in risk_df.columns:
-        risk_df["GEOID"] = risk_df["GEOID"].map(_norm_geoid)
+        risk_df["GEOID"] = risk_df["GEOID"].apply(lambda x: _norm_geoid(x, geoid_width))
     risk_df["date"] = pd.to_datetime(risk_df["date"], errors="coerce").dt.date
 
     def _hour_key(h):
@@ -209,7 +206,6 @@ with tab_dash:
 
     hours = sorted(risk_df["hour_range"].dropna().unique().tolist(), key=_hour_key)
     hour = st.select_slider("Saat aralığı", options=hours, value=hours[0] if hours else None)
-
     if hour is None:
         st.warning("Saat aralığı bulunamadı.")
         st.stop()
@@ -224,9 +220,18 @@ with tab_dash:
 
     # GEOID → centroid
     cent = centroids_from_geojson()
-    view = f.merge(cent, on="GEOID", how="left").dropna(subset=["lat","lon"])
+    before = len(f)
+    view = f.merge(cent, on="GEOID", how="left")
+    after = view["lat"].notna().sum()
+    view = view.dropna(subset=["lat","lon"])
 
-    # -------- Renk/size (TAB İÇİNDE) --------
+    if len(view) == 0:
+        st.warning(
+            f"Eşleşen centroid bulunamadı (seçili kayıt: {before}, eşleşen: {after}). "
+            f"Muhtemel sebep: GEOID genişliği/formatı. GeoJSON GEOID width={geoid_width}."
+        )
+
+    # Renk/size
     level_colors = {
         "critical": [220, 20, 60],
         "high":     [255, 140, 0],
@@ -234,7 +239,6 @@ with tab_dash:
         "low":      [34, 139, 34],
     }
 
-    # risk_level varsa: kategorik renk, yoksa score→gradyan
     if "risk_level" in view.columns and view["risk_level"].notna().any():
         rl = view["risk_level"].astype(str).str.strip().str.lower()
         colors = rl.map(level_colors)
@@ -252,36 +256,37 @@ with tab_dash:
     with mcol1:
         st.metric("Seçilen kayıt", len(view))
     with mcol2:
-        st.metric("Ortalama risk", round(float(view["risk_score"].mean()), 3))
+        st.metric("Ortalama risk", round(float(view["risk_score"].mean()) if len(view) else 0.0, 3))
     st.dataframe(view[["GEOID","risk_score","risk_level","risk_decile"]].reset_index(drop=True))
 
-    # Harita (pydeck)
-    geojson_dict = load_geojson_dict()
-    initial = pdk.ViewState(
-        latitude=float(view["lat"].mean()) if not view.empty else 37.7749,
-        longitude=float(view["lon"].mean()) if not view.empty else -122.4194,
-        zoom=11, pitch=30
-    )
-    layer_points = pdk.Layer(
-        "ScatterplotLayer",
-        data=view,
-        get_position=["lon","lat"],
-        get_radius="radius",
-        get_fill_color="color",
-        pickable=True
-    )
-    layer_poly = pdk.Layer(
-        "GeoJsonLayer",
-        data=geojson_dict,
-        stroked=False, filled=False,
-        get_line_color=[150,150,150],
-        line_width_min_pixels=1
-    )
-    st.pydeck_chart(pdk.Deck(
-        layers=[layer_poly, layer_points],
-        initial_view_state=initial,
-        tooltip={"text":"GEOID: {GEOID}\nRisk: {risk_score:.3f} ({risk_level})"}
-    ))
+    # Harita (pydeck) — sadece nokta varsa çiz
+    if len(view):
+        geojson_dict = load_geojson_dict()
+        initial = pdk.ViewState(
+            latitude=float(view["lat"].mean()) if not view.empty else 37.7749,
+            longitude=float(view["lon"].mean()) if not view.empty else -122.4194,
+            zoom=11, pitch=30
+        )
+        layer_points = pdk.Layer(
+            "ScatterplotLayer",
+            data=view,
+            get_position=["lon","lat"],
+            get_radius="radius",
+            get_fill_color="color",
+            pickable=True
+        )
+        layer_poly = pdk.Layer(
+            "GeoJsonLayer",
+            data=geojson_dict,
+            stroked=False, filled=False,
+            get_line_color=[150,150,150],
+            line_width_min_pixels=1
+        )
+        st.pydeck_chart(pdk.Deck(
+            layers=[layer_poly, layer_points],
+            initial_view_state=initial,
+            tooltip={"text":"GEOID: {GEOID}\nRisk: {risk_score:.3f} ({risk_level})"}
+        ))
 
     st.divider()
     with st.expander("🚓 Devriye Önerileri (patrol_recs*.csv)"):
@@ -291,7 +296,7 @@ with tab_dash:
             try:
                 recs = load_csv(path)
                 if "GEOID" in recs.columns:
-                    recs["GEOID"] = recs["GEOID"].map(_norm_geoid)
+                    recs["GEOID"] = recs["GEOID"].apply(lambda x: _norm_geoid(x, geoid_width))
                 recs["date"] = pd.to_datetime(recs["date"], errors="coerce").dt.date
                 fr = recs[(recs["date"] == sel_date) & (recs["hour_range"] == hour)].copy()
                 st.dataframe(fr.head(200))
@@ -317,7 +322,6 @@ with tab_ops:
     if not HAS_SRC:
         st.info("`src/` modülleri bulunamadı. Bu sekme için repo içindeki `src/` klasörünü deploy ettiğinden emin ol.")
     else:
-        # Kontroller
         col1, col2, col3 = st.columns([2,2,1])
         with col1:
             start_h = st.slider("Başlangıç saat", 0, 23, 20)
@@ -330,7 +334,6 @@ with tab_ops:
         hour_label = to_hour_range(start_h, width_h)
         st.markdown(f"**Öneri Dilimi:** `{hour_label}`")
 
-        # Engine
         with st.spinner("Tahminler üretiliyor..."):
             engine = InferenceEngine()
             df_top = engine.predict_topk(hour_label=hour_label, topk=int(topk_ops))
@@ -339,16 +342,14 @@ with tab_ops:
         cols_show = [c for c in ["rank","hour_range","GEOID","priority_score","p_crime","lcb","ucb","top3_crime_types"] if c in df_top.columns]
         st.dataframe(df_top[cols_show])
 
-        # Harita (Folium)
         try:
             cent_src = load_centroids_src()
         except Exception:
             cent_src = None
         if cent_src is None or cent_src.empty:
-            cent_src = centroids_from_geojson()  # geojson'dan fallback
+            cent_src = centroids_from_geojson()
 
         try:
-            # draw_map imzasına uygun çağrı
             mp = draw_map(
                 df_top,
                 cent_src,
@@ -363,13 +364,11 @@ with tab_ops:
         except Exception as e:
             st.info(f"Harita çizilemedi: {e}")
 
-        # İndirme
         try:
             out_csv = engine.save_topk(df_top)
             st.download_button("CSV indir", data=open(out_csv,"rb").read(),
                                file_name=os.path.basename(out_csv), mime="text/csv")
         except Exception:
-            # paths.RISK_DIR olmayabilir; fallback direkt buffer
             st.download_button(
                 "CSV indir",
                 data=df_top.to_csv(index=False).encode("utf-8"),
@@ -392,7 +391,7 @@ with tab_diag:
             st.info("Artifact listelenemedi veya boş.")
     try:
         gdf = load_geojson_gdf()
-        st.write(f"GeoJSON OK — {len(gdf)} geometri")
+        st.write(f"GeoJSON OK — {len(gdf)} geometri (GEOID width={int(st.session_state.get('GEOID_WIDTH', 11))})")
         st.dataframe(gdf.head())
     except Exception as e:
         st.info(f"GeoJSON teşhis: {e}")
