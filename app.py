@@ -100,7 +100,7 @@ def load_csv(inner_path: str) -> pd.DataFrame:
     # raw fallback
     return pd.read_csv(io.BytesIO(read_raw(inner_path)))
 
-@st.cache_data(ttl=900)
+@st.cache_resource(ttl=900)
 def load_geojson_gdf() -> gpd.GeoDataFrame:
     try:
         if USE_ARTIFACT:
@@ -111,7 +111,6 @@ def load_geojson_gdf() -> gpd.GeoDataFrame:
         st.error(f"GeoJSON okunamadı: {e}")
         raise
     gdf = gpd.GeoDataFrame.from_features(gj["features"], crs="EPSG:4326")
-    # GEOID normalizasyonu
     if "GEOID" in gdf.columns:
         gdf["GEOID"] = gdf["GEOID"].map(_norm_geoid)
     return gdf
@@ -134,8 +133,6 @@ def centroids_from_geojson() -> pd.DataFrame:
         "lon": c["centroid"].x,
     })
 
-# geo_gdf = load_geojson_gdf()        
-cent = centroids_from_geojson()   
 # ----------------- UI -----------------
 st.set_page_config(page_title="SF Crime Dashboard", layout="wide")
 st.title("SF Crime Dashboard")
@@ -191,8 +188,7 @@ if f.empty:
 f = f.sort_values("risk_score", ascending=False).head(int(top_k))
 
 # GEOID → centroid
-geo_gdf = load_geojson_gdf()
-cent = centroids_from_geojson(geo_gdf)
+cent = centroids_from_geojson()  # argümansız çağrı
 view = f.merge(cent, on="GEOID", how="left").dropna(subset=["lat","lon"])
 
 # Renk/size
