@@ -1,6 +1,5 @@
 ## 5) src/route_planner.py
 
-```python
 from __future__ import annotations
 import numpy as np
 import pandas as pd
