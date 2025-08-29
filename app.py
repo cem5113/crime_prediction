@@ -70,14 +70,7 @@ PATH_METRICS    = "crime_data/metrics_stacking.csv"
 PATH_GEOJSON    = "crime_data/sf_census_blocks_with_population.geojson"
 
 # Tarihsel grid (sayım bazlı μ için)
-PATH_GRID = "crime_data/sf_crime_grid_full_labeled.csv"
-
-CANDIDATE_GRIDS = [
-    "crime_data/sf_crime_grid_full_labeled.csv",
-    "crime_data/sf_crime_grid_labeled.csv",
-    "crime_data/sf_crime_grid.csv",
-    "crime_data/crime_grid.csv",
-]
+PATH_GRID = "crime_prediction_data/sf_crime_grid_full_labeled.csv"
 
 def resolve_grid_path() -> str | None:
     try:
