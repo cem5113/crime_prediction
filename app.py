@@ -72,6 +72,39 @@ PATH_GEOJSON    = "crime_data/sf_census_blocks_with_population.geojson"
 # Tarihsel grid (sayım bazlı μ için)
 PATH_GRID = "crime_data/sf_crime_grid_full_labeled.csv"
 
+CANDIDATE_GRIDS = [
+    "crime_data/sf_crime_grid_full_labeled.csv",
+    "crime_data/sf_crime_grid_labeled.csv",
+    "crime_data/sf_crime_grid.csv",
+    "crime_data/crime_grid.csv",
+]
+
+def resolve_grid_path() -> str | None:
+    try:
+        names = list_artifact_paths()  # artifact içeriğini listeler
+        if names:
+            # 1) birebir eşleşme
+            if PATH_GRID in names:
+                return PATH_GRID
+            # 2) suffix ile
+            suf = PATH_GRID.split("/")[-1].lower()
+            for n in names:
+                if n.lower().endswith(suf):
+                    return n
+            # 3) aday listeden birini bul
+            for cand in CANDIDATE_GRIDS:
+                if cand in names:
+                    return cand
+            # 4) fuzzy: 'grid' ve '.csv' içeren ilk dosya
+            for n in names:
+                nl = n.lower()
+                if nl.endswith(".csv") and "grid" in nl and "crime" in nl:
+                    return n
+    except Exception:
+        pass
+    # artifact boşsa raw'a bırak
+    return PATH_GRID
+
 # --- Sayım (Poisson) yardımcıları ---
 SEASON_MONTHS = {
     "Winter": (12, 1, 2),
@@ -312,7 +345,25 @@ with tab_dash:
     if f.empty:
         st.warning("Seçilen tarih/saat için kayıt yok. Başka seçim dener misin?")
         st.stop()
-        
+
+    def _grid_or_stop():
+        try:
+            g = load_csv(PATH_GRID)
+            return g
+        except Exception as e:
+            st.error(
+                f"Sayım grid dosyası bulunamadı: `{PATH_GRID}`\n\n"
+                "➊ Artifact içinde bu adda bir dosya yok.\n"
+                "➋ Repo/raw yolunda da yok.\n\n"
+                "Poisson (count) görünümü bu yüzden pas geçildi."
+            )
+            # İstersen burada risk_score görünümüne düşebilirsin;
+            # şu anlık nazikçe durduruyoruz:
+            st.stop()
+    
+    # --- μ (beklenen olay) hesapla: tarihsel grid'den sezon+dow+3saat total / gün sayısı
+    grid = _grid_or_stop()
+
     # --- μ (beklenen olay) hesapla: tarihsel grid'den sezon+dow+3saat total / gün sayısı
     grid = load_csv(PATH_GRID)
     grid["GEOID"] = grid["GEOID"].map(_norm_geoid)
