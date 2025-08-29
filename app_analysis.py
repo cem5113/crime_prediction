@@ -22,10 +22,10 @@ USE_ARTIFACT = st.secrets.get("USE_ARTIFACT", True)  # commit modunda False yap
 GITHUB_TOKEN = st.secrets.get("GITHUB_TOKEN", None)
 
 # Pipeline'ın bıraktığı dosya yolları (artifact zip içinde de aynı)
-PATH_RISK = "crime_data/risk_hourly.csv"
-PATH_RECS = "crime_data/patrol_recs.csv"                 # veya patrol_recs_multi.csv
-PATH_METRICS = "crime_data/metrics_stacking.csv"
-PATH_GEOJSON = "crime_data/sf_census_blocks_with_population.geojson"  # poligonlar
+PATH_RISK = "crime_prediction_data/risk_hourly.csv"
+PATH_RECS = "crime_prediction_data/patrol_recs.csv"                 # veya patrol_recs_multi.csv
+PATH_METRICS = "crime_prediction_data/metrics_stacking.csv"
+PATH_GEOJSON = "crime_prediction_data/sf_census_blocks_with_population.geojson"  # poligonlar
 
 # =========================================================
 # Yardımcılar
@@ -284,4 +284,4 @@ with st.expander("📈 Model Metrikleri"):
     except Exception as e:
         st.info(f"Metrikler yüklenemedi: {e}")
 
-st.caption("Kaynak: GitHub Actions ile üretilen `crime_data/` çıktıları")
+st.caption("Kaynak: GitHub Actions ile üretilen `crime_prediction_data/` çıktıları")
