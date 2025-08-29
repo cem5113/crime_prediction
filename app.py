@@ -296,17 +296,6 @@ with tab_dash:
         )
     
     # Teşhis
-    with st.expander("🧪 GEOID Merge Teşhisi", expanded=False):
-        st.write(f"f satır sayısı: {len(f)}")
-        st.write(f"cent satır sayısı: {len(cent)} | cent kolonları: {list(cent.columns)}")
-        st.write(f"risk GEOID uzunluğu: {risk_len}")
-        st.write(f"merge sonrası satır: {len(view)}; lat/lon dolu satır: {view[['lat','lon']].notna().all(axis=1).sum()}")
-        st.write(view.head(5)[['GEOID','lat','lon']])
-    
-    # lat/lon zorunlu
-    view = view.dropna(subset=["lat","lon"])
-
-
     # 🧪 merge sonrası teşhis
     with st.expander("🧪 GEOID Merge Teşhisi", expanded=False):
         st.write(f"f satır sayısı: {len(f)}")
@@ -339,31 +328,47 @@ with tab_dash:
 
     # Harita (pydeck)
     geojson_dict = load_geojson_dict()
+    
+    # 🔧 Pydeck'e sadece serileştirilebilir alanları ver
+    view_points = view.loc[:, ["lon", "lat", "GEOID", "risk_score", "risk_level", "color", "radius"]].copy()
+    view_points["GEOID"] = view_points["GEOID"].astype(str)
+    view_points["risk_score"] = view_points["risk_score"].astype(float)
+    view_points["risk_level"] = view_points["risk_level"].astype(str)
+    view_points["radius"] = view_points["radius"].astype(int)
+    
     initial = pdk.ViewState(
-        latitude=float(view["lat"].mean()) if not view.empty else 37.7749,
-        longitude=float(view["lon"].mean()) if not view.empty else -122.4194,
-        zoom=11, pitch=30
+        latitude=float(view_points["lat"].mean()) if not view_points.empty else 37.7749,
+        longitude=float(view_points["lon"].mean()) if not view_points.empty else -122.4194,
+        zoom=11,
+        pitch=30,
     )
+    
     layer_points = pdk.Layer(
         "ScatterplotLayer",
-        data=view,
-        get_position=["lon","lat"],
+        data=view_points,                 # <-- view yerine view_points
+        get_position=["lon", "lat"],
         get_radius="radius",
         get_fill_color="color",
-        pickable=True
+        pickable=True,
     )
+    
     layer_poly = pdk.Layer(
         "GeoJsonLayer",
         data=geojson_dict,
-        stroked=False, filled=False,
-        get_line_color=[150,150,150],
-        line_width_min_pixels=1
+        stroked=False,
+        filled=False,
+        get_line_color=[150, 150, 150],
+        line_width_min_pixels=1,
     )
-    st.pydeck_chart(pdk.Deck(
-        layers=[layer_poly, layer_points],
-        initial_view_state=initial,
-        tooltip={"text":"GEOID: {GEOID}\nRisk: {risk_score:.3f} ({risk_level})"}
-    ))
+    
+    # ⚠️ Tooltip'te Python biçimi (:.3f) kullanmayın; düz alan adı yazın
+    st.pydeck_chart(
+        pdk.Deck(
+            layers=[layer_poly, layer_points],
+            initial_view_state=initial,
+            tooltip={"text": "GEOID: {GEOID}\nRisk: {risk_score} ({risk_level})"},
+        )
+    )
 
     st.divider()
     with st.expander("🚓 Devriye Önerileri (patrol_recs*.csv)"):
