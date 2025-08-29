@@ -1,4 +1,4 @@
-# app.py
+# app.py (revize)
 from __future__ import annotations
 import io, json, zipfile, requests, datetime as dt, os, time, re
 import pandas as pd
@@ -53,7 +53,7 @@ PATH_RISK       = "crime_data/risk_hourly.csv"
 CANDIDATE_RECS  = ["crime_data/patrol_recs_multi.csv", "crime_data/patrol_recs.csv"]
 PATH_METRICS    = "crime_data/metrics_stacking.csv"
 PATH_GEOJSON    = "crime_data/sf_census_blocks_with_population.geojson"
-PATH_GRID = "crime_data/sf_crime_grid_full_labeled.csv"
+PATH_GRID       = "crime_data/sf_crime_grid_full_labeled.csv"
 
 # ----------------- Yardımcılar -----------------
 def digits_only(x) -> str:
@@ -96,7 +96,7 @@ def _retry_get(url: str, headers: dict | None = None, timeout: int = 60, retries
 
 @st.cache_data(ttl=3600)
 def read_raw(path: str) -> bytes:
-    url = f"https://raw.githubusercontent.com/{REPO}/{BRANCH}/{path}"
+    url = f"https://raw.githubusercontent.com/{REPO}/{BRANCH}/{path}"]
     r = _retry_get(url, timeout=60)
     return r.content
 
@@ -211,6 +211,19 @@ def centroids_tract11_from_geojson() -> pd.DataFrame:
 st.set_page_config(page_title="SF Crime Dashboard", layout="wide")
 st.title("SF Crime • Dashboard & Operasyonel")
 
+# 🔄 Cache temizleme (artifact değiştiyse)
+with st.sidebar:
+    if st.button("♻️ Cache temizle & yenile"):
+        try:
+            st.cache_data.clear()
+        except Exception:
+            pass
+        try:
+            st.cache_resource.clear()
+        except Exception:
+            pass
+        st.experimental_rerun()
+
 tab_dash, tab_ops, tab_diag = st.tabs(["📊 Dashboard", "🛠 Operasyonel", "🔎 Teşhis"])
 
 # ============================
@@ -240,10 +253,10 @@ with tab_dash:
         st.error(f"`{PATH_RISK}` okunamadı: {e}")
         st.stop()
 
-    # GEOID → TRACT11 hizalama
-    risk_df["GEOID"] = risk_df.get("GEOID", pd.Series([None]*len(risk_df)))
-    risk_df["GEOID"] = risk_df["GEOID"].apply(to_tract11)
+    # GEOID → TRACT11 + tip/temizlik
+    risk_df["GEOID"] = risk_df.get("GEOID", pd.Series([None]*len(risk_df))).apply(to_tract11)
     risk_df["date"] = pd.to_datetime(risk_df["date"], errors="coerce").dt.date
+    risk_df["risk_score"] = pd.to_numeric(risk_df.get("risk_score"), errors="coerce")
 
     def _hour_key(h):
         try: return int(str(h).split("-")[0].split(":")[0])
@@ -256,11 +269,11 @@ with tab_dash:
         st.warning("Saat aralığı bulunamadı.")
         st.stop()
 
-    # Filtre
-    f = risk_df[(risk_df["date"] == sel_date) & (risk_df["hour_range"] == hour)].copy()
+    # Seçilen saat dilimi için TAM KÜME (g), sonra Top-K (f)
+    g = risk_df[(risk_df["date"] == sel_date) & (risk_df["hour_range"] == hour)].copy()
 
-    # Eğer seçilen tarihte pipeline çıktısı yoksa — Operasyonel fallback
-    if f.empty:
+    if g.empty:
+        # ——— Operasyonel fallback ———
         if HAS_SRC:
             h0, w = _parse_hour_width(hour)
             hour_label_engine = to_hour_range(h0, w)
@@ -269,6 +282,7 @@ with tab_dash:
                 pred = engine.predict_topk(hour_label=hour_label_engine, topk=int(top_k))
             f = pred.rename(columns={"p_crime": "risk_score"})[["GEOID", "hour_range", "risk_score"]].copy()
             f["GEOID"] = f["GEOID"].apply(to_tract11)
+            f["risk_score"] = pd.to_numeric(f["risk_score"], errors="coerce").fillna(0.0).clip(0,1)
             f["risk_level"] = f["risk_score"].apply(_risk_level_from_score)
             try:
                 dec = pd.qcut(f["risk_score"], 10, labels=False, duplicates="drop")
@@ -281,36 +295,59 @@ with tab_dash:
         else:
             st.warning("Seçilen tarih/saat için kayıt yok ve operasyonel motor devrede değil.")
             st.stop()
+    else:
+        # ——— Pipeline çıktısı var ———
+        # Teşhis: skor tekdüze mi?
+        uniq = int(g["risk_score"].nunique(dropna=True))
+        if uniq <= 1:
+            st.warning(
+                f"Uyarı: {sel_date} — {hour} için `risk_score` tek değer (n_unique={uniq}). "
+                f"Kaynak `{PATH_RISK}`/stacking’i kontrol edin."
+            )
+        # Top-K oluştur
+        f = g.sort_values("risk_score", ascending=False).head(int(top_k)).copy()
+        f["risk_score"] = pd.to_numeric(f["risk_score"], errors="coerce").fillna(0.0).clip(0,1)
+        if "risk_level" not in f.columns or f["risk_level"].isna().all():
+            f["risk_level"] = f["risk_score"].apply(_risk_level_from_score)
+        if "risk_decile" not in f.columns:
+            try:
+                dec_all = pd.qcut(g["risk_score"], 10, labels=False, duplicates="drop")
+                tmp = g[["GEOID"]].copy()
+                tmp["risk_decile"] = (dec_all.max() - dec_all).fillna(0).astype(int) + 1
+                f = f.merge(tmp, on="GEOID", how="left")
+                f["risk_decile"] = pd.to_numeric(f["risk_decile"], errors="coerce").fillna(10).astype(int)
+            except Exception:
+                f["risk_decile"] = 10
 
-    # Top-K
-    f = f.sort_values("risk_score", ascending=False).head(int(top_k))
-
-    # +++ EKLE +++  (Top-K f hazırlandıktan sonra)
-    # Seçilen tarihten sezon & gün bilgisi
-    _season_map = {12:"Winter",1:"Winter",2:"Winter", 3:"Spring",4:"Spring",5:"Spring",
-                   6:"Summer",7:"Summer",8:"Summer", 9:"Fall",10:"Fall",11:"Fall"}
-    _sel_season = _season_map.get(int(sel_date.month), "Summer")
-    _sel_dow    = int(pd.Timestamp(sel_date).weekday())  # 0=Mon ... 6=Sun
-
-    # GRID dosyasından crime_mix'i çek
+    # --- GRID'den crime_mix ---
+    grid_source = "none"
+    grid_match_count = 0
     try:
         grid_df = load_csv(PATH_GRID)
+        grid_source = "artifact" if USE_ARTIFACT else "raw/commit"
+
         grid_df["GEOID"] = grid_df.get("GEOID", pd.Series([None]*len(grid_df))).apply(to_tract11)
         cols_pick = ["GEOID","season","day_of_week","hour_range","crime_mix","crime_count"]
         grid_pick = grid_df[cols_pick].copy()
+        _season_map = {12:"Winter",1:"Winter",2:"Winter", 3:"Spring",4:"Spring",5:"Spring",
+                       6:"Summer",7:"Summer",8:"Summer", 9:"Fall",10:"Fall",11:"Fall"}
+        _sel_season = _season_map.get(int(sel_date.month), "Summer")
+        _sel_dow    = int(pd.Timestamp(sel_date).weekday())
+
         grid_pick = grid_pick[
             (grid_pick["season"] == _sel_season) &
             (pd.to_numeric(grid_pick["day_of_week"], errors="coerce").fillna(-1).astype(int) == _sel_dow) &
             (grid_pick["hour_range"] == hour)
         ][["GEOID","crime_mix","crime_count"]].drop_duplicates("GEOID", keep="first")
 
+        grid_match_count = int(grid_pick["GEOID"].nunique())
         f = f.merge(grid_pick, on="GEOID", how="left")
-        f["crime_mix"] = f["crime_mix"].fillna("").replace("", "0")
-        f["crime_count"] = pd.to_numeric(f.get("crime_count"), errors="coerce").fillna(0).astype(int)
+        if "crime_count" in f.columns:
+            f["crime_count"] = pd.to_numeric(f.get("crime_count"), errors="coerce")
     except Exception as e:
-        f["crime_mix"] = "0"
-        f["crime_count"] = 0
-
+        st.info(f"GRID okunamadı veya bulunamadı: {e}")
+        f["crime_mix"] = pd.Series([None]*len(f))
+        f["crime_count"] = pd.Series([None]*len(f))
 
     # GEOID → centroid (TRACT11)
     cent = centroids_tract11_from_geojson()
@@ -346,17 +383,19 @@ with tab_dash:
         st.metric("Eşleşen centroid", matched)
     with mcol3:
         st.metric("Ortalama risk", round(float(view["risk_score"].mean()) if len(view) else 0.0, 3))
-    zero_only = int((view["crime_mix"] == "0").sum())
-    st.metric("Top3 boş (0) sayısı", zero_only)
 
+    # Grid eşleşmesi bilgisi
+    st.caption(f"GRID kaynağı: **{grid_source}** · crime_mix eşleşen GEOID: **{grid_match_count}/{len(f)}**")
+
+    # crime_mix/count'i view'a taşı ve gösterim için standardize et
     to_merge_cols = ["GEOID"]
     for c in ["crime_mix","crime_count"]:
         if c in f.columns:
             to_merge_cols.append(c)
     extra = f[to_merge_cols].drop_duplicates("GEOID", keep="first")
     view = view.merge(extra, on="GEOID", how="left")
-    
-    # Standartlaştırma
+
+    # Görünüm standardizasyonu (ekranda 0 gösterelim ama metrik yanıltmayalım)
     if "crime_mix" not in view.columns:
         view["crime_mix"] = ""
     view["crime_mix"] = view["crime_mix"].fillna("").replace("", "0")
@@ -364,11 +403,17 @@ with tab_dash:
         view["crime_count"] = pd.to_numeric(view["crime_count"], errors="coerce").fillna(0).astype(int)
     else:
         view["crime_count"] = 0
-    
-    # Dinamik kolon seçimi (olmayan kolonlar KeyError vermesin)
+
+    # “Top3 boş” metriğini, gerçekten grid eşleşmesi varsa göster
+    if grid_match_count > 0:
+        zero_only = int((view["crime_mix"] == "0").sum())
+        st.metric("Top3 boş (0) sayısı", zero_only)
+    else:
+        st.metric("Top3 boş (0) sayısı", "—")
+
+    # Dinamik kolon seçimi
     want_cols = ["GEOID","risk_score","risk_level","risk_decile","crime_count","crime_mix"]
     cols_show_tbl = [c for c in want_cols if c in view.columns]
-    
     st.dataframe(view[cols_show_tbl].reset_index(drop=True))
 
     # Harita (pydeck) — sadece nokta varsa çiz + JSON güvenli veri
@@ -417,6 +462,15 @@ with tab_dash:
         ))
     else:
         st.info("Haritada gösterecek nokta bulunamadı (eşleşen centroid yok).")
+
+    # Teşhis: risk dağılımı
+    with st.expander("🔎 Teşhis: risk_score dağılımı (bu saat)"):
+        try:
+            desc = g["risk_score"].describe().to_frame(name="risk_score")
+            st.dataframe(desc)
+            st.write("n_unique:", int(g["risk_score"].nunique(dropna=True)))
+        except Exception:
+            st.write("Dağılım hesaplanamadı.")
 
     st.divider()
     with st.expander("🚓 Devriye Önerileri (patrol_recs*.csv)"):
