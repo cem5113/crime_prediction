@@ -279,7 +279,7 @@ with tab_dash:
     view["color"] = view["risk_level"].map(lambda k: level_colors.get(k, [100, 100, 100]))
     view["radius"] = (view["risk_score"].clip(0,1) * 40 + 10).astype(int)
 
-    st.subheader(f"📍 {sel_date} — {hour} — Top {len(view)} GEOID}")
+    st.subheader(f"📍 {sel_date} — {hour} — Top {len(view)} GEOID")
     mcol1, mcol2 = st.columns(2)
     with mcol1:
         st.metric("Seçilen kayıt", len(view))
