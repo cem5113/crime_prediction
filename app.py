@@ -4,25 +4,18 @@ import pandas as pd
 import geopandas as gpd
 import streamlit as st
 import pydeck as pdk
-import sys, pathlib, traceback
+import sys, pathlib
 
 ROOT = pathlib.Path(__file__).resolve().parent
 SRC_DIR = ROOT / "src"
+
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
+
 if SRC_DIR.exists() and str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
-for base in (ROOT.parent, ROOT.parent.parent):
-    sdir = base / "src"
-    if sdir.exists():
-        if str(base) not in sys.path:
-            sys.path.insert(0, str(base))
-        if str(sdir) not in sys.path:
-            sys.path.insert(0, str(sdir))
-        break
 
 HAS_SRC = True
-SRC_ERR = ""
 try:
     from src.config import params, paths
     from src.common import to_hour_range
@@ -31,7 +24,6 @@ try:
     from src.viz import draw_map
 except Exception:
     HAS_SRC = False
-    SRC_ERR = traceback.format_exc()
 
 REPO = st.secrets.get("REPO", "cem5113/crime_prediction_data")
 BRANCH = st.secrets.get("BRANCH", "main")
@@ -39,8 +31,10 @@ ARTIFACT_NAME = st.secrets.get("ARTIFACT_NAME", "sf-crime-pipeline-output")
 GITHUB_TOKEN = st.secrets.get("GITHUB_TOKEN", None)
 
 def _to_bool(x, default=True):
-    if isinstance(x, bool): return x
-    if x is None: return default
+    if isinstance(x, bool):
+        return x
+    if x is None:
+        return default
     return str(x).strip().lower() in ("1","true","yes","on")
 
 USE_ARTIFACT = _to_bool(st.secrets.get("USE_ARTIFACT", True), True)
@@ -51,7 +45,8 @@ PATH_METRICS = "crime_data/metrics_stacking.csv"
 PATH_GEOJSON = "crime_data/sf_census_blocks_with_population.geojson"
 
 def digits_only(x) -> str:
-    if pd.isna(x): return ""
+    if pd.isna(x):
+        return ""
     return re.sub(r"\D", "", str(x))
 
 def to_tract11(x) -> str:
@@ -70,9 +65,12 @@ def _parse_hour_width(hr_label: str) -> tuple[int, int]:
     return max(0, min(23, h0)), max(1, min(6, width))
 
 def _risk_level_from_score(p: float) -> str:
-    if p >= 0.95: return "critical"
-    if p >= 0.85: return "high"
-    if p >= 0.60: return "medium"
+    if p >= 0.95:
+        return "critical"
+    if p >= 0.85:
+        return "high"
+    if p >= 0.60:
+        return "medium"
     return "low"
 
 def _retry_get(url: str, headers: dict | None = None, timeout: int = 60, retries: int = 2) -> requests.Response:
@@ -98,7 +96,10 @@ def fetch_artifact_zip() -> zipfile.ZipFile:
     if not GITHUB_TOKEN:
         raise RuntimeError("GITHUB_TOKEN yok; artifact indirilemez.")
     s = requests.Session()
-    s.headers.update({ "Authorization": f"Bearer {GITHUB_TOKEN}", "Accept": "application/vnd.github+json" })
+    s.headers.update({
+        "Authorization": f"Bearer {GITHUB_TOKEN}",
+        "Accept": "application/vnd.github+json"
+    })
     resp = _retry_get(f"https://api.github.com/repos/{REPO}/actions/artifacts?per_page=100", headers=s.headers, timeout=60)
     arts = [a for a in resp.json().get("artifacts", []) if a["name"] == ARTIFACT_NAME and not a["expired"]]
     if not arts:
@@ -126,7 +127,11 @@ def find_in_artifact(candidates: list[str]) -> str | None:
     hits = [n for n in names if any(n.endswith("/"+s) or n.endswith(s) for s in suffixes)]
     if not hits:
         return None
-    hits.sort(key=lambda n: (0 if n.startswith("crime_data/") else 1, 0 if "multi" in n else 1, len(n)))
+    hits.sort(key=lambda n: (
+        0 if n.startswith("crime_data/") else 1,
+        0 if "multi" in n else 1,
+        len(n)
+    ))
     return hits[0]
 
 def _resolve_inner_path(inner_path: str) -> str:
@@ -208,27 +213,40 @@ with tab_dash:
         try:
             _tmp = load_csv(PATH_RISK).copy()
             _tmp["date"] = pd.to_datetime(_tmp["date"], errors="coerce").dt.date
-            default_date = _tmp["date"].max()
+            data_min = _tmp["date"].min()
+            data_max = _tmp["date"].max()
         except Exception:
-            default_date = dt.date.today()
-        sel_date = st.date_input("Tarih", default_date or dt.date.today())
+            data_min = data_max = dt.date.today()
+        today = dt.date.today()
+        min_d = min(data_min, today - dt.timedelta(days=3))
+        max_d = max(data_max, today + dt.timedelta(days=3))
+        default_date = today if today >= data_min else data_max
+        sel_date = st.date_input("Tarih", value=default_date, min_value=min_d, max_value=max_d)
+
     try:
         risk_df = load_csv(PATH_RISK)
     except Exception as e:
         st.error(f"{PATH_RISK} okunamadı: {e}")
         st.stop()
+
     risk_df["GEOID"] = risk_df.get("GEOID", pd.Series([None]*len(risk_df)))
     risk_df["GEOID"] = risk_df["GEOID"].apply(to_tract11)
     risk_df["date"] = pd.to_datetime(risk_df["date"], errors="coerce").dt.date
+
     def _hour_key(h):
-        try: return int(str(h).split("-")[0].split(":")[0])
-        except: return 0
+        try:
+            return int(str(h).split("-")[0].split(":")[0])
+        except:
+            return 0
+
     hours = sorted(risk_df["hour_range"].dropna().unique().tolist(), key=_hour_key)
     hour = st.select_slider("Saat aralığı", options=hours, value=hours[0] if hours else None)
     if hour is None:
         st.warning("Saat aralığı bulunamadı.")
         st.stop()
+
     f = risk_df[(risk_df["date"] == sel_date) & (risk_df["hour_range"] == hour)].copy()
+
     if f.empty:
         if HAS_SRC:
             h0, w = _parse_hour_width(hour)
@@ -236,25 +254,27 @@ with tab_dash:
             with st.spinner("Bu tarih için pipeline çıktısı yok. Anlık tahmin üretiliyor…"):
                 engine = InferenceEngine()
                 pred = engine.predict_topk(hour_label=hour_label_engine, topk=int(top_k))
-                f = pred.rename(columns={"p_crime": "risk_score"})[["GEOID", "hour_range", "risk_score"]].copy()
-                f["GEOID"] = f["GEOID"].apply(to_tract11)
-                f["risk_level"] = f["risk_score"].apply(_risk_level_from_score)
-                try:
-                    dec = pd.qcut(f["risk_score"], 10, labels=False, duplicates="drop")
-                    f["risk_decile"] = (dec.max() - dec).fillna(0).astype(int) + 1
-                except Exception:
-                    f["risk_decile"] = 10
-                f["date"] = sel_date
-                f["hour_range"] = hour
+            f = pred.rename(columns={"p_crime": "risk_score"})[["GEOID", "hour_range", "risk_score"]].copy()
+            f["GEOID"] = f["GEOID"].apply(to_tract11)
+            f["risk_level"] = f["risk_score"].apply(_risk_level_from_score)
+            try:
+                dec = pd.qcut(f["risk_score"], 10, labels=False, duplicates="drop")
+                f["risk_decile"] = (dec.max() - dec).fillna(0).astype(int) + 1
+            except Exception:
+                f["risk_decile"] = 10
+            f["date"] = sel_date
+            f["hour_range"] = hour
             st.info("Seçilen tarih için **Operasyonel motor** kullanıldı (pipeline çıkışı yok).")
         else:
             st.warning("Seçilen tarih/saat için kayıt yok ve operasyonel motor devrede değil.")
             st.stop()
+
     f = f.sort_values("risk_score", ascending=False).head(int(top_k))
     cent = centroids_tract11_from_geojson()
     view = f.merge(cent, on="GEOID", how="left")
     matched = int(view["lat"].notna().sum())
     view = view.dropna(subset=["lat","lon"]).reset_index(drop=True)
+
     level_colors = {
         "critical": [220, 20, 60],
         "high": [255, 140, 0],
@@ -269,14 +289,20 @@ with tab_dash:
     else:
         vals = (view["risk_score"].fillna(0).clip(0, 1) * 255).round().astype(int)
         colors = vals.apply(lambda v: [int(v), 0, int(255 - v)])
+
     view["color"] = colors
     view["radius"] = (view["risk_score"].fillna(0).clip(0, 1) * 40 + 10).round().astype(int)
+
     st.subheader(f"📍 {sel_date} — {hour} — Top {len(view)} GEOID")
     mcol1, mcol2, mcol3 = st.columns(3)
-    with mcol1: st.metric("Seçilen kayıt", len(f))
-    with mcol2: st.metric("Eşleşen centroid", matched)
-    with mcol3: st.metric("Ortalama risk", round(float(view["risk_score"].mean()) if len(view) else 0.0, 3))
+    with mcol1:
+        st.metric("Seçilen kayıt", len(f))
+    with mcol2:
+        st.metric("Eşleşen centroid", matched)
+    with mcol3:
+        st.metric("Ortalama risk", round(float(view["risk_score"].mean()) if len(view) else 0.0, 3))
     st.dataframe(view[["GEOID","risk_score","risk_level","risk_decile"]].reset_index(drop=True))
+
     if matched > 0:
         point_cols = ["GEOID", "lat", "lon", "risk_score", "risk_level", "color", "radius"]
         point_df = view[point_cols].copy()
@@ -286,66 +312,89 @@ with tab_dash:
         point_df["lat"] = pd.to_numeric(point_df["lat"], errors="coerce").astype(float)
         point_df["lon"] = pd.to_numeric(point_df["lon"], errors="coerce").astype(float)
         point_df["radius"] = pd.to_numeric(point_df["radius"], errors="coerce").fillna(10).astype(int)
-        point_df["color"] = point_df["color"].apply(lambda c: [int(c[0]), int(c[1]), int(c[2])] if isinstance(c, (list, tuple)) else [100, 100, 100])
+        point_df["color"] = point_df["color"].apply(
+            lambda c: [int(c[0]), int(c[1]), int(c[2])] if isinstance(c, (list, tuple)) else [100, 100, 100]
+        )
         geojson_dict = load_geojson_dict()
-        initial = pdk.ViewState(latitude=float(point_df["lat"].mean()), longitude=float(point_df["lon"].mean()), zoom=11, pitch=30)
-        layer_points = pdk.Layer("ScatterplotLayer", data=point_df, get_position=["lon","lat"], get_radius="radius", get_fill_color="color", pickable=True)
-        layer_poly = pdk.Layer("GeoJsonLayer", data=geojson_dict, stroked=False, filled=False, get_line_color=[150,150,150], line_width_min_pixels=1)
-        st.pydeck_chart(pdk.Deck(layers=[layer_poly, layer_points], initial_view_state=initial, tooltip={"text": "GEOID: {GEOID}\nRisk: {risk_score} ({risk_level})"}))
+        initial = pdk.ViewState(
+            latitude=float(point_df["lat"].mean()),
+            longitude=float(point_df["lon"].mean()),
+            zoom=11,
+            pitch=30
+        )
+        layer_points = pdk.Layer(
+            "ScatterplotLayer",
+            data=point_df,
+            get_position=["lon","lat"],
+            get_radius="radius",
+            get_fill_color="color",
+            pickable=True,
+        )
+        layer_poly = pdk.Layer(
+            "GeoJsonLayer",
+            data=geojson_dict,
+            stroked=False,
+            filled=False,
+            get_line_color=[150,150,150],
+            line_width_min_pixels=1,
+        )
+        st.pydeck_chart(pdk.Deck(
+            layers=[layer_poly, layer_points],
+            initial_view_state=initial,
+            tooltip={"text": "GEOID: {GEOID}\nRisk: {risk_score} ({risk_level})"}
+        ))
     else:
         st.info("Haritada gösterecek nokta bulunamadı (eşleşen centroid yok).")
+
     st.divider()
     with st.expander("🚓 Devriye Önerileri (patrol_recs*.csv)"):
         rec_loaded = False
         last_err = None
         art_path = find_in_artifact(CANDIDATE_RECS) if USE_ARTIFACT else None
         paths_to_try = []
-        if art_path: paths_to_try.append(art_path)
+        if art_path:
+            paths_to_try.append(art_path)
         paths_to_try.extend(CANDIDATE_RECS)
         tried = set()
         for path in paths_to_try:
-            if not path or path in tried: continue
+            if not path or path in tried:
+                continue
             tried.add(path)
             try:
                 warn = not (USE_ARTIFACT and art_path is None and path in CANDIDATE_RECS)
                 recs = load_csv(path, warn_on_artifact_fail=warn)
                 recs["GEOID"] = recs.get("GEOID", pd.Series([None]*len(recs))).apply(to_tract11)
-                recs["date"] = pd.to_datetime(recs.get("date"), errors="coerce").dt.date
+                if "date" in recs.columns:
+                    recs["date"] = pd.to_datetime(recs["date"], errors="coerce").dt.date
+                else:
+                    recs["date"] = sel_date
                 if "hour_range" not in recs.columns:
                     recs["hour_range"] = hour
                 fr = recs[(recs["date"] == sel_date) & (recs["hour_range"] == hour)].copy()
+                if fr.empty:
+                    continue
+                st.caption(f"Kullanılan dosya: {path}")
                 st.dataframe(fr.head(200))
                 rec_loaded = True
                 break
             except Exception as e:
                 last_err = e
         if not rec_loaded:
-            st.info(f"Devriye önerileri okunamadı: {last_err}")
-    with st.expander("📈 Model Metrikleri"):
-        try:
-            m = load_csv(PATH_METRICS)
-            st.dataframe(m)
-        except Exception as e:
-            st.info(f"Metrikler yüklenemedi: {e}")
+            if art_path is None and USE_ARTIFACT:
+                st.info("Artifact'ta patrol_recs*.csv bulunamadı; raw/commit’te de dosya görünmüyor.")
+            else:
+                st.info(f"Devriye önerileri yüklenemedi. Son hata: {last_err}")
 
 with tab_ops:
     st.subheader("Operasyonel Risk Paneli")
     if not HAS_SRC:
         st.info("src/ modülleri bulunamadı. Bu sekme için repo içindeki src/ klasörünü deploy ettiğinden emin ol.")
-        with st.expander("Detay (debug)"):
-            st.code(SRC_ERR)
-        try:
-            st.write("ROOT:", str(ROOT))
-            st.write("SRC_DIR:", str(SRC_DIR), "exists:", SRC_DIR.exists())
-            st.write("ROOT içeriği (ilk 50):", os.listdir(ROOT)[:50])
-            if SRC_DIR.exists():
-                st.write("src/ içeriği:", os.listdir(SRC_DIR))
-        except Exception:
-            pass
     else:
         col1, col2, col3 = st.columns([2,2,1])
-        with col1: start_h = st.slider("Başlangıç saat", 0, 23, 20)
-        with col2: width_h = st.selectbox("Pencere (saat)", [1,2,3,4], index=1)
+        with col1:
+            start_h = st.slider("Başlangıç saat", 0, 23, 20)
+        with col2:
+            width_h = st.selectbox("Pencere (saat)", [1,2,3,4], index=1)
         with col3:
             topk_default = getattr(params, "TOP_K", 10)
             topk_ops = st.number_input("Top-K", min_value=5, max_value=100, value=topk_default, step=5)
@@ -376,7 +425,12 @@ with tab_ops:
             out_csv = engine.save_topk(df_top)
             st.download_button("CSV indir", data=open(out_csv,"rb").read(), file_name=os.path.basename(out_csv), mime="text/csv")
         except Exception:
-            st.download_button("CSV indir", data=df_top.to_csv(index=False).encode("utf-8"), file_name="topk_geoid.csv", mime="text/csv")
+            st.download_button(
+                "CSV indir",
+                data=df_top.to_csv(index=False).encode("utf-8"),
+                file_name="topk_geoid.csv",
+                mime="text/csv"
+            )
 
 with tab_diag:
     st.subheader("Artifact / Geo Teşhis")
