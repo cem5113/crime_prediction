@@ -96,7 +96,7 @@ def _retry_get(url: str, headers: dict | None = None, timeout: int = 60, retries
 
 @st.cache_data(ttl=3600)
 def read_raw(path: str) -> bytes:
-    url = f"https://raw.githubusercontent.com/{REPO}/{BRANCH}/{path}"]
+    url = f"https://raw.githubusercontent.com/{REPO}/{BRANCH}/{path}"
     r = _retry_get(url, timeout=60)
     return r.content
 
