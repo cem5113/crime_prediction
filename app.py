@@ -69,6 +69,51 @@ CANDIDATE_RECS  = ["crime_data/patrol_recs_multi.csv", "crime_data/patrol_recs.c
 PATH_METRICS    = "crime_data/metrics_stacking.csv"
 PATH_GEOJSON    = "crime_data/sf_census_blocks_with_population.geojson"
 
+# Tarihsel grid (sayım bazlı μ için)
+PATH_GRID = "crime_data/sf_crime_grid_full_labeled.csv"
+
+# --- Sayım (Poisson) yardımcıları ---
+SEASON_MONTHS = {
+    "Winter": (12, 1, 2),
+    "Spring": (3, 4, 5),
+    "Summer": (6, 7, 8),
+    "Fall":   (9, 10, 11),
+}
+
+def season_of_date(d: dt.date) -> str:
+    m = d.month
+    if m in SEASON_MONTHS["Winter"]: return "Winter"
+    if m in SEASON_MONTHS["Spring"]: return "Spring"
+    if m in SEASON_MONTHS["Summer"]: return "Summer"
+    return "Fall"
+
+def hours_in_block(hour_range_label: str) -> list[int]:
+    a, b = [int(x) for x in hour_range_label.split("-")]
+    if b <= a: b += 24
+    return [h % 24 for h in range(a, b)]  # örn: '00-03' -> [0,1,2]
+
+def hist_days_for(season: str, dow: int,
+                  start=dt.date(2020, 8, 29),
+                  end=dt.date(2025, 8, 26)) -> int:
+    """Veri ufkumuzda (yaklaşık 5 yıl) aynı sezon+dow kaç gün var?"""
+    rng = pd.date_range(start, end, freq="D")
+    mask = (rng.dayofweek == dow) & (rng.month.isin(SEASON_MONTHS[season]))
+    return int(mask.sum())
+
+def poisson_table(mu: pd.Series, k_cap: int = 5) -> pd.DataFrame:
+    """μ -> P(0..k_cap-1), P(5+), E[N]"""
+    import numpy as np, math
+    ks = np.arange(0, k_cap)
+    fact = np.array([math.factorial(k) for k in ks], dtype=float)
+    mu_vec = mu.to_numpy().reshape(-1, 1)                # (N,1)
+    pmf = np.exp(-mu_vec) * (mu_vec ** ks) / fact        # (N,k_cap)
+    p5plus = 1.0 - pmf.sum(axis=1, keepdims=True)        # (N,1)
+    pmf_all = np.hstack([pmf, p5plus])                   # (N,k_cap+1)
+    cols = [f"P({k})" for k in range(k_cap)] + ["P(5+)"]
+    out = pd.DataFrame(pmf_all, index=mu.index, columns=cols)
+    out["E[N]"] = (pmf * ks).sum(axis=1) + 5 * p5plus[:, 0]
+    return out
+
 # ----------------- IO / Cache -----------------
 @st.cache_data(ttl=3600)
 def read_raw(path: str) -> bytes:
@@ -267,85 +312,89 @@ with tab_dash:
     if f.empty:
         st.warning("Seçilen tarih/saat için kayıt yok. Başka seçim dener misin?")
         st.stop()
-
-    f = f.sort_values("risk_score", ascending=False).head(int(top_k))
-
-    # GEOID → centroid
+        
+    # --- μ (beklenen olay) hesapla: tarihsel grid'den sezon+dow+3saat total / gün sayısı
+    grid = load_csv(PATH_GRID)
+    grid["GEOID"] = grid["GEOID"].map(_norm_geoid)
     
+    sel_season = season_of_date(sel_date)
+    sel_dow = sel_date.weekday()
+    hrs = hours_in_block(hour)  # örn '20-23' -> [20,21,22]
+    
+    agg = (grid[(grid["season"] == sel_season) &
+                (grid["day_of_week"] == sel_dow) &
+                (grid["event_hour"].isin(hrs))]
+           .groupby("GEOID", as_index=False)["crime_count"].sum()
+           .rename(columns={"crime_count": "hist_count"}))
+    
+    den = max(hist_days_for(sel_season, sel_dow), 1)  # aynı sezon+DOW kaç gün var
+    agg["mu"] = agg["hist_count"] / den
+    
+    # Aday GEOID'lere μ join et (risk_score'u kullanmıyoruz)
+    view = f.merge(agg[["GEOID", "mu"]], on="GEOID", how="left")
+    view["mu"] = view["mu"].fillna(0.0)
+    
+    # Olasılık tablosu: P(0..4), P(5+), E[N]
+    dist = poisson_table(view.set_index("GEOID")["mu"], k_cap=5).reset_index()
+    view = view.drop(columns=[c for c in view.columns if c not in ["GEOID"]]).merge(dist, on="GEOID", how="left")
+    
+    # Rank & Top-K: E[N] büyükten küçüğe
+    view = view.sort_values("E[N]", ascending=False).head(int(top_k))
+    
+    # Koordinatlar
     cent = centroids_from_geojson()
+    view = view.merge(cent[["GEOID","lat","lon"]], on="GEOID", how="left").dropna(subset=["lat","lon"])
     
-    # risk GEOID uzunluğu (çoğunluk/mod)
-    risk_len = int(
-        f["GEOID"].dropna().astype(str).str.len().mode().iloc[0]
-        if not f.empty else 11
-    )
+    # Görsel seviye/renk: E[N] decile
+    try:
+        view["risk_decile"] = pd.qcut(view["E[N]"].rank(method="first"), 10, labels=list(range(1,11))).astype(int)
+    except Exception:
+        view["risk_decile"] = 1  # tekdüze değerlerde fallback
+    def _level(d): return "critical" if d>=9 else ("high" if d>=7 else ("medium" if d>=4 else "low"))
+    view["risk_level"] = view["risk_decile"].map(_level)
     
-    # cent içinde hangi anahtar mevcut?
-    # cent kolonları: ['GEOID','lat','lon','GEOID11','lat_agg','lon_agg']
-    if risk_len == 11 and "GEOID11" in cent.columns:
-        # tract (11 hane) istiyor: cent'in tract bazlı lat_agg/lon_agg kolonlarını kullan
-        view = f.merge(
-            cent[["GEOID11","lat_agg","lon_agg"]],
-            left_on="GEOID", right_on="GEOID11", how="left"
-        ).rename(columns={"lat_agg":"lat","lon_agg":"lon"})
-    else:
-        # block (15 hane) ya da birebir eşleşme
-        view = f.merge(
-            cent[["GEOID","lat","lon"]],
-            on="GEOID", how="left"
-        )
-    
-    # Teşhis
-    # 🧪 merge sonrası teşhis
-    with st.expander("🧪 GEOID Merge Teşhisi", expanded=False):
-        st.write(f"f satır sayısı: {len(f)}")
-        st.write(f"cent satır sayısı: {len(cent)} | cent kolonları: {list(cent.columns)}")
-        st.write(f"merge sonrası satır: {len(view)}; lat/lon dolu satır: {view[['lat','lon']].notna().all(axis=1).sum()}")
-        st.write(view.head(5)[["GEOID","lat","lon"]])
-
-    # lat/lon zorunlu
-    view = view.dropna(subset=["lat","lon"])
-
-    # -------------------
-    # Renk/size 
     level_colors = {
         "critical": [220, 20, 60],
         "high":     [255, 140, 0],
         "medium":   [255, 215, 0],
         "low":      [34, 139, 34],
     }
-    view["risk_level"] = view["risk_level"].astype(str).str.lower()
     view["color"] = view["risk_level"].map(lambda k: level_colors.get(k, [100, 100, 100]))
-    view["radius"] = (view["risk_score"].clip(0,1) * 40 + 10).astype(int)
-
+    # Balon yarıçapını E[N] ile ölçekle (0–1.5 aralığını genişlet)
+    view["radius"] = (view["E[N]"].clip(0, 1.5) / 1.5 * 40 + 10).astype(int)
+    
     st.subheader(f"📍 {sel_date} — {hour} — Top {len(view)} GEOID")
     mcol1, mcol2 = st.columns(2)
     with mcol1:
         st.metric("Seçilen kayıt", len(view))
     with mcol2:
-        st.metric("Ortalama risk", round(float(view["risk_score"].mean()), 3))
-    st.dataframe(view[["GEOID","risk_score","risk_level","risk_decile"]].reset_index(drop=True))
-
-    # Harita (pydeck)
+        st.metric("Ortalama beklenen olay (E[N])", round(float(view["E[N]"].mean()), 3))
+    
+    # Yüzdeleri tabloya yüzde olarak yazdır
+    cols_show = ["GEOID","E[N]","P(0)","P(1)","P(2)","P(3)","P(4)","P(5+)","risk_level","risk_decile"]
+    st.dataframe(
+        view[cols_show].reset_index(drop=True)
+          .style.format({c: "{:.1%}" for c in ["P(0)","P(1)","P(2)","P(3)","P(4)","P(5+)"]})
+    )
+    
+    # --- Harita (pydeck) — E[N] ile tooltip
     geojson_dict = load_geojson_dict()
     
-    # 🔧 Pydeck'e sadece serileştirilebilir alanları ver
-    view_points = view.loc[:, ["lon", "lat", "GEOID", "risk_score", "risk_level", "color", "radius"]].copy()
+    view_points = view.loc[:, ["lon", "lat", "GEOID", "E[N]", "risk_level", "color", "radius"]].copy()
     view_points["GEOID"] = view_points["GEOID"].astype(str)
-    view_points["risk_score"] = view_points["risk_score"].astype(float)
+    view_points["E[N]"] = view_points["E[N]"].astype(float)
     view_points["risk_level"] = view_points["risk_level"].astype(str)
     view_points["radius"] = view_points["radius"].astype(int)
     
     initial = pdk.ViewState(
         latitude=float(view_points["lat"].mean()) if not view_points.empty else 37.7749,
         longitude=float(view_points["lon"].mean()) if not view_points.empty else -122.4194,
-        zoom=11,
-        pitch=30,
+        zoom=11, pitch=30
     )
     
     layer_points = pdk.Layer(
         "ScatterplotLayer",
-        data=view_points,                 # <-- view yerine view_points
+        data=view_points,
         get_position=["lon", "lat"],
         get_radius="radius",
         get_fill_color="color",
@@ -353,22 +402,19 @@ with tab_dash:
     )
     
     layer_poly = pdk.Layer(
-        "GeoJsonLayer",
-        data=geojson_dict,
-        stroked=False,
-        filled=False,
-        get_line_color=[150, 150, 150],
-        line_width_min_pixels=1,
+        "GeoJsonLayer", data=geojson_dict,
+        stroked=False, filled=False,
+        get_line_color=[150, 150, 150], line_width_min_pixels=1,
     )
     
-    # ⚠️ Tooltip'te Python biçimi (:.3f) kullanmayın; düz alan adı yazın
     st.pydeck_chart(
         pdk.Deck(
             layers=[layer_poly, layer_points],
             initial_view_state=initial,
-            tooltip={"text": "GEOID: {GEOID}\nRisk: {risk_score} ({risk_level})"},
+            tooltip={"text": "GEOID: {GEOID}\nE[N]: {E[N]}\nSeviye: {risk_level}"},
         )
     )
+
 
     st.divider()
     with st.expander("🚓 Devriye Önerileri (patrol_recs*.csv)"):
