@@ -53,7 +53,7 @@ PATH_RISK       = "crime_data/risk_hourly.csv"
 CANDIDATE_RECS  = ["crime_data/patrol_recs_multi.csv", "crime_data/patrol_recs.csv"]
 PATH_METRICS    = "crime_data/metrics_stacking.csv"
 PATH_GEOJSON    = "crime_data/sf_census_blocks_with_population.geojson"
-PATH_GRID       = "crime_data/sf_crime_grid_full_labeled.csv"
+PATH_GRID       = "crime_data/sf_crime_09.csv"
 
 # ----------------- Yardımcılar -----------------
 def digits_only(x) -> str:
