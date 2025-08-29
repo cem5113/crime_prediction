@@ -350,11 +350,26 @@ with tab_dash:
         zero_only = int((view["crime_mix"] == "0").sum())
         st.metric("Top3 boş (0) sayısı", zero_only)
 
-    cols_show_tbl = ["GEOID","risk_score","risk_level","risk_decile"]
-    if "crime_mix" in f.columns:
-        # view ile f aynı sırada olmayabilir; görünüm için f'den alıp GEOID ile eşleyelim
-        view = view.merge(f[["GEOID","crime_mix","crime_count"]], on="GEOID", how="left")
-        cols_show_tbl += ["crime_count","crime_mix"]
+    to_merge_cols = ["GEOID"]
+    for c in ["crime_mix","crime_count"]:
+        if c in f.columns:
+            to_merge_cols.append(c)
+    extra = f[to_merge_cols].drop_duplicates("GEOID", keep="first")
+    view = view.merge(extra, on="GEOID", how="left")
+    
+    # Standartlaştırma
+    if "crime_mix" not in view.columns:
+        view["crime_mix"] = ""
+    view["crime_mix"] = view["crime_mix"].fillna("").replace("", "0")
+    if "crime_count" in view.columns:
+        view["crime_count"] = pd.to_numeric(view["crime_count"], errors="coerce").fillna(0).astype(int)
+    else:
+        view["crime_count"] = 0
+    
+    # Dinamik kolon seçimi (olmayan kolonlar KeyError vermesin)
+    want_cols = ["GEOID","risk_score","risk_level","risk_decile","crime_count","crime_mix"]
+    cols_show_tbl = [c for c in want_cols if c in view.columns]
+    
     st.dataframe(view[cols_show_tbl].reset_index(drop=True))
 
     # Harita (pydeck) — sadece nokta varsa çiz + JSON güvenli veri
