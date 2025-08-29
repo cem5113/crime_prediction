@@ -226,14 +226,18 @@ with tab_dash:
     cent = centroids_from_geojson()
     view = f.merge(cent, on="GEOID", how="left").dropna(subset=["lat","lon"])
 
-    # Renk/size
+    # -------------------
+    # Renk/size (REVİZE)
+    # -------------------
     level_colors = {
         "critical": [220, 20, 60],
         "high":     [255, 140, 0],
         "medium":   [255, 215, 0],
         "low":      [34, 139, 34],
     }
-    view["color"] = view["risk_level"].map(level_colors).fillna([100,100,100])
+    # risk_level'i normalize edip dict.get ile default veriyoruz
+    view["risk_level"] = view["risk_level"].astype(str).str.lower()
+    view["color"] = view["risk_level"].map(lambda k: level_colors.get(k, [100, 100, 100]))
     view["radius"] = (view["risk_score"].clip(0,1) * 40 + 10).astype(int)
 
     st.subheader(f"📍 {sel_date} — {hour} — Top {len(view)} GEOID")
