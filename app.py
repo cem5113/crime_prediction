@@ -53,6 +53,7 @@ PATH_RISK       = "crime_data/risk_hourly.csv"
 CANDIDATE_RECS  = ["crime_data/patrol_recs_multi.csv", "crime_data/patrol_recs.csv"]
 PATH_METRICS    = "crime_data/metrics_stacking.csv"
 PATH_GEOJSON    = "crime_data/sf_census_blocks_with_population.geojson"
+PATH_GRID = "crime_data/sf_crime_grid_full_labeled.csv"
 
 # ----------------- Yardımcılar -----------------
 def digits_only(x) -> str:
@@ -284,6 +285,33 @@ with tab_dash:
     # Top-K
     f = f.sort_values("risk_score", ascending=False).head(int(top_k))
 
+    # +++ EKLE +++  (Top-K f hazırlandıktan sonra)
+    # Seçilen tarihten sezon & gün bilgisi
+    _season_map = {12:"Winter",1:"Winter",2:"Winter", 3:"Spring",4:"Spring",5:"Spring",
+                   6:"Summer",7:"Summer",8:"Summer", 9:"Fall",10:"Fall",11:"Fall"}
+    _sel_season = _season_map.get(int(sel_date.month), "Summer")
+    _sel_dow    = int(pd.Timestamp(sel_date).weekday())  # 0=Mon ... 6=Sun
+
+    # GRID dosyasından crime_mix'i çek
+    try:
+        grid_df = load_csv(PATH_GRID)
+        grid_df["GEOID"] = grid_df.get("GEOID", pd.Series([None]*len(grid_df))).apply(to_tract11)
+        cols_pick = ["GEOID","season","day_of_week","hour_range","crime_mix","crime_count"]
+        grid_pick = grid_df[cols_pick].copy()
+        grid_pick = grid_pick[
+            (grid_pick["season"] == _sel_season) &
+            (pd.to_numeric(grid_pick["day_of_week"], errors="coerce").fillna(-1).astype(int) == _sel_dow) &
+            (grid_pick["hour_range"] == hour)
+        ][["GEOID","crime_mix","crime_count"]].drop_duplicates("GEOID", keep="first")
+
+        f = f.merge(grid_pick, on="GEOID", how="left")
+        f["crime_mix"] = f["crime_mix"].fillna("").replace("", "0")
+        f["crime_count"] = pd.to_numeric(f.get("crime_count"), errors="coerce").fillna(0).astype(int)
+    except Exception as e:
+        f["crime_mix"] = "0"
+        f["crime_count"] = 0
+
+
     # GEOID → centroid (TRACT11)
     cent = centroids_tract11_from_geojson()
     view = f.merge(cent, on="GEOID", how="left")
@@ -318,12 +346,24 @@ with tab_dash:
         st.metric("Eşleşen centroid", matched)
     with mcol3:
         st.metric("Ortalama risk", round(float(view["risk_score"].mean()) if len(view) else 0.0, 3))
+    if "crime_mix" in view.columns:
+        zero_only = int((view["crime_mix"] == "0").sum())
+        st.metric("Top3 boş (0) sayısı", zero_only)
 
-    st.dataframe(view[["GEOID","risk_score","risk_level","risk_decile"]].reset_index(drop=True))
+    cols_show_tbl = ["GEOID","risk_score","risk_level","risk_decile"]
+    if "crime_mix" in f.columns:
+        # view ile f aynı sırada olmayabilir; görünüm için f'den alıp GEOID ile eşleyelim
+        view = view.merge(f[["GEOID","crime_mix","crime_count"]], on="GEOID", how="left")
+        cols_show_tbl += ["crime_count","crime_mix"]
+    st.dataframe(view[cols_show_tbl].reset_index(drop=True))
 
     # Harita (pydeck) — sadece nokta varsa çiz + JSON güvenli veri
     if matched > 0:
         point_cols = ["GEOID", "lat", "lon", "risk_score", "risk_level", "color", "radius"]
+        if "crime_mix" in view.columns:
+            point_cols.append("crime_mix")
+        else:
+            view["crime_mix"] = ""
         point_df = view[point_cols].copy()
         point_df["GEOID"] = point_df["GEOID"].astype(str)
         point_df["risk_level"] = point_df["risk_level"].fillna("").astype(str)
@@ -359,7 +399,7 @@ with tab_dash:
         st.pydeck_chart(pdk.Deck(
             layers=[layer_poly, layer_points],
             initial_view_state=initial,
-            tooltip={"text": "GEOID: {GEOID}\nRisk: {risk_score} ({risk_level})"}
+            tooltip={"text": "GEOID: {GEOID}\nRisk: {risk_score} ({risk_level})\nTop3: {crime_mix}"}
         ))
     else:
         st.info("Haritada gösterecek nokta bulunamadı (eşleşen centroid yok).")
