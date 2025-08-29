@@ -162,24 +162,42 @@ def load_geojson_dict() -> dict:
 
 @st.cache_data(ttl=900)
 def centroids_from_geojson() -> pd.DataFrame:
-    """Poligon içi garanti nokta (representative_point) ile centroid DataFrame'i üret."""
-    gdf = load_geojson_gdf()
+    """Poligon içi garanti nokta (representative_point) ile centroid DF'i üretir.
+       Hem block GEOID (tam) hem de tract için GEOID11 kolonunu döndürür."""
+    gdf = load_geojson_gdf().copy()
+
+    # GEOID string & GEOID11 (tract) türet
+    gdf["GEOID"] = gdf["GEOID"].astype(str).str.strip()
+    gdf["GEOID11"] = gdf["GEOID"].str[:11]
+
+    # Representative point -> lat/lon
     try:
         gg = gdf.to_crs(3857)
         pts = gg.representative_point().to_crs(4326)
-        return pd.DataFrame({
-            "GEOID": gdf["GEOID"].astype(str),
-            "lat": pts.y.values,
-            "lon": pts.x.values,
-        })
+        gdf["_lat"] = pts.y.values
+        gdf["_lon"] = pts.x.values
     except Exception:
         c = gdf.copy()
         c["centroid"] = c.geometry.centroid
-        return pd.DataFrame({
-            "GEOID": c["GEOID"].astype(str),
-            "lat": c["centroid"].y,
-            "lon": c["centroid"].x,
-        })
+        gdf["_lat"] = c["centroid"].y
+        gdf["_lon"] = c["centroid"].x
+
+    # Tract düzeyinde tek nokta: block noktalarını tract bazında medyanla topla
+    cent11 = (
+        gdf.groupby("GEOID11", as_index=False)[["_lat","_lon"]]
+           .median()
+           .rename(columns={"_lat":"lat","_lon":"lon"})
+    )
+
+    # İstersen block anahtarıyla da kullanabilelim (opsiyonel)
+    cent_full = gdf[["GEOID","_lat","_lon"]].rename(columns={"_lat":"lat","_lon":"lon"}).drop_duplicates()
+
+    # Her iki anahtarı da döndür (merge'te hangisi lazımsa kullanacağız)
+    # Not: aynı kolon isimleri çakışmasın diye sufffix’li döndürebiliriz ama
+    # dashboard tarafında seçim yapacağımız için sade tutuyoruz.
+    cent = cent_full.merge(cent11, left_on="GEOID", right_on="GEOID11", how="outer", suffixes=("","_agg"))
+    # Sonuç kolonları: ['GEOID','lat','lon','GEOID11','lat_agg','lon_agg']
+    return cent
 
 # ----------------- UI -----------------
 st.set_page_config(page_title="SF Crime Dashboard", layout="wide")
@@ -253,8 +271,41 @@ with tab_dash:
     f = f.sort_values("risk_score", ascending=False).head(int(top_k))
 
     # GEOID → centroid
+    
     cent = centroids_from_geojson()
-    view = f.merge(cent, on="GEOID", how="left")
+    
+    # risk GEOID uzunluğu (çoğunluk/mod)
+    risk_len = int(
+        f["GEOID"].dropna().astype(str).str.len().mode().iloc[0]
+        if not f.empty else 11
+    )
+    
+    # cent içinde hangi anahtar mevcut?
+    # cent kolonları: ['GEOID','lat','lon','GEOID11','lat_agg','lon_agg']
+    if risk_len == 11 and "GEOID11" in cent.columns:
+        # tract (11 hane) istiyor: cent'in tract bazlı lat_agg/lon_agg kolonlarını kullan
+        view = f.merge(
+            cent[["GEOID11","lat_agg","lon_agg"]],
+            left_on="GEOID", right_on="GEOID11", how="left"
+        ).rename(columns={"lat_agg":"lat","lon_agg":"lon"})
+    else:
+        # block (15 hane) ya da birebir eşleşme
+        view = f.merge(
+            cent[["GEOID","lat","lon"]],
+            on="GEOID", how="left"
+        )
+    
+    # Teşhis
+    with st.expander("🧪 GEOID Merge Teşhisi", expanded=False):
+        st.write(f"f satır sayısı: {len(f)}")
+        st.write(f"cent satır sayısı: {len(cent)} | cent kolonları: {list(cent.columns)}")
+        st.write(f"risk GEOID uzunluğu: {risk_len}")
+        st.write(f"merge sonrası satır: {len(view)}; lat/lon dolu satır: {view[['lat','lon']].notna().all(axis=1).sum()}")
+        st.write(view.head(5)[['GEOID','lat','lon']])
+    
+    # lat/lon zorunlu
+    view = view.dropna(subset=["lat","lon"])
+
 
     # 🧪 merge sonrası teşhis
     with st.expander("🧪 GEOID Merge Teşhisi", expanded=False):
@@ -267,8 +318,7 @@ with tab_dash:
     view = view.dropna(subset=["lat","lon"])
 
     # -------------------
-    # Renk/size (REVİZE)
-    # -------------------
+    # Renk/size 
     level_colors = {
         "critical": [220, 20, 60],
         "high":     [255, 140, 0],
