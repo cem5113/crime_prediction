@@ -64,10 +64,10 @@ GITHUB_TOKEN  = st.secrets.get("GITHUB_TOKEN", None)
 USE_ARTIFACT  = _to_bool(st.secrets.get("USE_ARTIFACT", True), True)
 
 # Pipeline dosya yolları
-PATH_RISK       = "crime_data/risk_hourly.csv"
-CANDIDATE_RECS  = ["crime_data/patrol_recs_multi.csv", "crime_data/patrol_recs.csv"]
-PATH_METRICS    = "crime_data/metrics_stacking.csv"
-PATH_GEOJSON    = "crime_data/sf_census_blocks_with_population.geojson"
+PATH_RISK       = "crime_prediction_data/risk_hourly.csv"
+CANDIDATE_RECS  = ["crime_prediction_data/patrol_recs_multi.csv", "crime_prediction_data/patrol_recs.csv"]
+PATH_METRICS    = "crime_prediction_data/metrics_stacking.csv"
+PATH_GEOJSON    = "crime_prediction_data/sf_census_blocks_with_population.geojson"
 
 # Tarihsel grid (sayım bazlı μ için)
 PATH_GRID = "crime_prediction_data/sf_crime_grid_full_labeled.csv"
@@ -182,7 +182,7 @@ def _resolve_inner_path(inner_path: str) -> str:
         return inner_path
     suffix = inner_path.split("/")[-1]
     candidates = [n for n in names if n.endswith("/"+suffix) or n.endswith(suffix)]
-    candidates.sort(key=lambda x: (0 if x.startswith("crime_data/") else 1, len(x)))
+    candidates.sort(key=lambda x: (0 if x.startswith("crime_prediction_data/") else 1, len(x)))
     return candidates[0] if candidates else inner_path
 
 def _read_from_artifact(inner_path: str) -> bytes:
@@ -565,4 +565,4 @@ with tab_diag:
     except Exception as e:
         st.info(f"GeoJSON teşhis: {e}")
 
-st.caption("Kaynak: GitHub Actions artifact/commit içindeki `crime_data/` çıktıları • Operasyonel sekme: src/* modülleri")
+st.caption("Kaynak: GitHub Actions artifact/commit içindeki `crime_prediction_data/` çıktıları • Operasyonel sekme: src/* modülleri")
