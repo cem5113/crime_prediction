@@ -346,9 +346,8 @@ with tab_dash:
         st.metric("Eşleşen centroid", matched)
     with mcol3:
         st.metric("Ortalama risk", round(float(view["risk_score"].mean()) if len(view) else 0.0, 3))
-    if "crime_mix" in view.columns:
-        zero_only = int((view["crime_mix"] == "0").sum())
-        st.metric("Top3 boş (0) sayısı", zero_only)
+    zero_only = int((view["crime_mix"] == "0").sum())
+    st.metric("Top3 boş (0) sayısı", zero_only)
 
     to_merge_cols = ["GEOID"]
     for c in ["crime_mix","crime_count"]:
