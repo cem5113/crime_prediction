@@ -121,7 +121,6 @@ def load_csv(inner_path: str) -> pd.DataFrame:
 
 @st.cache_resource(ttl=900)
 def load_geojson_gdf() -> gpd.GeoDataFrame:
-    """Büyük geometri: resource cache. (parametre alma!)"""
     try:
         if USE_ARTIFACT:
             gj = json.loads(_read_from_artifact(PATH_GEOJSON).decode("utf-8"))
@@ -130,9 +129,21 @@ def load_geojson_gdf() -> gpd.GeoDataFrame:
     except Exception as e:
         st.error(f"GeoJSON okunamadı: {e}")
         raise
+
     gdf = gpd.GeoDataFrame.from_features(gj["features"], crs="EPSG:4326")
-    if "GEOID" in gdf.columns:
-        gdf["GEOID"] = gdf["GEOID"].map(_norm_geoid)
+
+    # 🔧 GEOID sütununu otomatik tespit et
+    geoid_candidates = ["GEOID", "geoid", "GEOID10", "geoid10", "GEOID20", "geoid20"]
+    found = None
+    for c in geoid_candidates:
+        if c in gdf.columns:
+            found = c
+            break
+    if found is None:
+        st.error("GeoJSON içinde GEOID benzeri bir sütun bulunamadı (GEOID/geoid/GEOID10 …).")
+    else:
+        gdf["GEOID"] = gdf[found].map(_norm_geoid)
+
     return gdf
 
 @st.cache_data(ttl=900)
@@ -201,18 +212,72 @@ with tab_dash:
     # Beklenen kolonlar: GEOID,date,hour_range,risk_score,risk_level,risk_decile
     if "GEOID" in risk_df.columns:
         risk_df["GEOID"] = risk_df["GEOID"].map(_norm_geoid)
+    
     risk_df["date"] = pd.to_datetime(risk_df["date"], errors="coerce").dt.date
-
+    
+    # 🔧 hour_range normalize
+    risk_df["hour_range"] = risk_df["hour_range"].astype(str).map(normalize_hour_range)
+    
     def _hour_key(h):
         try: return int(str(h).split("-")[0])
         except: return 0
-
+    
     hours = sorted(risk_df["hour_range"].dropna().unique().tolist(), key=_hour_key)
     hour = st.select_slider("Saat aralığı", options=hours, value=hours[0] if hours else None)
-
+    
     if hour is None:
         st.warning("Saat aralığı bulunamadı.")
         st.stop()
+    
+    # Filtre + Top-K
+    f = risk_df[(risk_df["date"] == sel_date) & (risk_df["hour_range"] == hour)].copy()
+    
+    # 🧪 Hızlı teşhis (UI)
+    with st.expander("🧪 Filtre Teşhisi", expanded=False):
+        st.write(f"Toplam risk_df satırı: {len(risk_df)}")
+        st.write(f"Seçilen tarih: `{sel_date}`, seçilen saat: `{hour}`")
+        st.write(f"Seçimle eşleşen satır sayısı (merge öncesi): **{len(f)}**")
+        if len(f) == 0:
+            st.write("➡ Bu durumda risk_hourly.csv içinde bu tarih+saat için kayıt yok olabilir.")
+            st.write("Mevcut saat aralıkları örnek:", pd.Series(hours[:10]))
+    
+    if f.empty:
+        st.warning("Seçilen tarih/saat için kayıt yok. Başka seçim dener misin?")
+        st.stop()
+    
+    f = f.sort_values("risk_score", ascending=False).head(int(top_k))
+    
+    # GEOID → centroid
+    cent = centroids_from_geojson()
+    view = f.merge(cent, on="GEOID", how="left")
+    
+    # 🧪 merge sonrası teşhis
+    with st.expander("🧪 GEOID Merge Teşhisi", expanded=False):
+        st.write(f"f satır sayısı: {len(f)}")
+        st.write(f"cent satır sayısı: {len(cent)} | cent kolonları: {list(cent.columns)}")
+        st.write(f"merge sonrası satır: {len(view)}; lat/lon dolu satır: {view[['lat','lon']].notna().all(axis=1).sum()}")
+        sample = view.head(5)[["GEOID","lat","lon"]]
+        st.write(sample)
+    
+    # lat/lon şartı
+    view = view.dropna(subset=["lat","lon"])
+
+    import re
+
+    def normalize_hour_range(x: str) -> str:
+        if x is None or (isinstance(x, float) and pd.isna(x)):
+            return None
+        s = str(x).strip().replace("–", "-").replace("—", "-")  # en dash/emdash → '-'
+        m = re.match(r"^\s*(\d{1,2})\s*-\s*(\d{1,2})\s*$", s)
+        if not m:
+            # "00-03" gibi değilse, ilk iki sayı yakalamayı dene
+            nums = re.findall(r"\d{1,2}", s)
+            if len(nums) >= 2:
+                a, b = int(nums[0]), int(nums[1])
+                return f"{a:02d}-{b:02d}"
+            return s  # olduğu gibi bırak (teşhiste görürüz)
+        a, b = int(m.group(1)), int(m.group(2))
+        return f"{a:02d}-{b:02d}"
 
     # Filtre + Top-K
     f = risk_df[(risk_df["date"] == sel_date) & (risk_df["hour_range"] == hour)].copy()
