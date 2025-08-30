@@ -14,26 +14,22 @@ from pathlib import Path
 import streamlit as st
 import altair as alt
 
-# =============================
-# SAYFA AYARLARI (ÖNCE!)
-# =============================
+# SAYFA AYARLARI 
 st.set_page_config(page_title="SUTAM: Suç Tahmin Modeli", layout="wide")
 
-# =============================
-# KÜÇÜK UI / CSS
-# =============================
+# --- Stil (başlık 1 tık büyük + 1 tık aşağı) ---
 SMALL_UI_CSS = """
 <style>
 /* Genel yazı boyutu */
 html, body, [class*="css"] { font-size: 14px; }
 
 /* Başlıklar */
-h1 { font-size: 1.6rem; margin: .1rem 0 .6rem 0; }
+h1 { font-size: 1.9rem; line-height: 1.25; margin: .6rem 0 .6rem 0; } /* önce 1.6rem ve .1rem idi */
 h2 { font-size: 1.15rem; margin: .4rem 0; }
 h3 { font-size: 1.00rem; margin: .3rem 0; }
 
 /* Ana içerik ve sidebar iç boşlukları */
-section.main > div.block-container { padding-top: .5rem; padding-bottom: .25rem; }
+section.main > div.block-container { padding-top: 1.1rem; padding-bottom: .25rem; } /* önce .5rem idi */
 [data-testid="stSidebar"] .block-container { padding-top: .6rem; padding-bottom: .6rem; }
 
 /* Metric kartları */
@@ -51,15 +47,16 @@ section.main > div.block-container { padding-top: .5rem; padding-bottom: .25rem;
 /* Expander başlığı */
 .st-expanderHeader, [data-baseweb="accordion"] { font-size: .9rem; }
 
-/* (İsteğe bağlı) üst menü / footer gizle */
+/* (opsiyonel) üst menü / footer gizle */
 #MainMenu { visibility: hidden; }
 footer { visibility: hidden; }
 </style>
 """
 st.markdown(SMALL_UI_CSS, unsafe_allow_html=True)
 
-# Başlık
+# Başlık (st.title bırak; CSS bunu büyütüp aşağı alacak)
 st.title("SUTAM: Suç Tahmin Modeli")
+
 
 # =============================
 # SABİTLER
