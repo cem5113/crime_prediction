@@ -1485,7 +1485,7 @@ def top_risky_table(df_agg: pd.DataFrame, n: int = 12) -> pd.DataFrame:
 
     return tab.rename(columns={"expected": "E[olay] (λ)"})
 
-        def brief_html(top5: pd.DataFrame, lines: list[str], patrol_rows: list[dict], start_iso: str, horizon_h: int) -> str:
+def brief_html(top5: pd.DataFrame, lines: list[str], patrol_rows: list[dict], start_iso: str, horizon_h: int) -> str:
     win = risk_window_text(start_iso, horizon_h)
     rows_html = "".join(
         f"<tr><td>{r[KEY_COL]}</td><td>{r['E[olay] (λ)']}</td></tr>"
