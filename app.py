@@ -84,6 +84,58 @@ GEO_DF, GEO_FEATURES = load_geoid_layer_cached("data/sf_cells.geojson", key_fiel
 if GEO_DF.empty:
     st.error("GEOJSON yüklendi ama satır gelmedi. 'data/sf_cells.geojson' içinde 'properties.geoid' eksik olabilir.")
 
+# --------- HIZLI AGGREGATION BLOĞU (EKLE: GEO_DF satırının hemen altına) ---------
+@st.cache_data(show_spinner=False)
+def precompute_base_intensity(geo_df: pd.DataFrame) -> np.ndarray:
+    lon = geo_df["centroid_lon"].to_numpy()
+    lat = geo_df["centroid_lat"].to_numpy()
+    peak1 = np.exp(-(((lon + 122.41) ** 2) / 0.0008 + ((lat - 37.78) ** 2) / 0.0005))
+    peak2 = np.exp(-(((lon + 122.42) ** 2) / 0.0006 + ((lat - 37.76) ** 2) / 0.0006))
+    noise = 0.07  # küçük sabit gürültü
+    return 0.2 + 0.8 * (peak1 + peak2) + noise
+
+BASE_INT = precompute_base_intensity(GEO_DF)
+
+def p_to_lambda_array(p: np.ndarray) -> np.ndarray:
+    p = np.clip(p, 0.0, 0.999999)
+    return -np.log1p(-p)
+
+@st.cache_data(show_spinner=False)
+def aggregate_fast(start_iso: str, horizon_h: int) -> pd.DataFrame:
+    start = datetime.fromisoformat(start_iso)
+    hours = np.arange(horizon_h)
+    diurnal = 1.0 + 0.4 * np.sin((((start.hour + hours) % 24 - 18) / 24) * 2 * np.pi)
+
+    # tüm hücreler × saatler
+    p = np.clip(BASE_INT[:, None] * diurnal[None, :], 0, 1)
+    p_any = np.clip(0.05 + 0.5 * p, 0, 0.98)
+
+    lam = p_to_lambda_array(p_any)
+    expected = lam.sum(axis=1)
+    q10 = np.maximum(0.0, p_any - 0.08).mean(axis=1)
+    q90 = np.minimum(1.0, p_any + 0.08).mean(axis=1)
+
+    alpha = np.array([1.5, 1.2, 2.0, 1.0, 1.3])
+    W = rng.dirichlet(alpha, size=len(GEO_DF))
+    types = expected[:, None] * W
+    assault, burglary, theft, robbery, vandalism = types.T
+
+    out = pd.DataFrame({
+        KEY_COL: GEO_DF[KEY_COL].to_numpy(),
+        "expected": expected,
+        "q10": q10, "q90": q90,
+        "assault": assault, "burglary": burglary, "theft": theft,
+        "robbery": robbery, "vandalism": vandalism,
+    })
+
+    q90_thr = out["expected"].quantile(0.90)
+    q70_thr = out["expected"].quantile(0.70)
+    out["tier"] = np.select(
+        [out["expected"] >= q90_thr, out["expected"] >= q70_thr],
+        ["Yüksek", "Orta"], default="Hafif",
+    )
+    return out
+
 # --- Sentetik yoğunluk (sadece prototip) ---
 def scenario_multipliers(_scenario: Dict) -> float:
     return 1.0
@@ -324,6 +376,39 @@ def build_map(df_agg: pd.DataFrame, patrol: Dict | None = None) -> folium.Map:
 
     return m
 
+def build_map_fast(df_agg: pd.DataFrame, show_popups: bool = False) -> folium.Map:
+    m = folium.Map(location=[37.7749, -122.4194], zoom_start=12, tiles="cartodbpositron")
+    if df_agg is None or df_agg.empty:
+        return m
+
+    color_map = {r[KEY_COL]: color_for_tier(r["tier"]) for _, r in df_agg.iterrows()}
+    fc = {"type": "FeatureCollection", "features": GEO_FEATURES}
+
+    def style_fn(feat):
+        gid = feat["properties"].get("id")
+        return {
+            "fillColor": color_map.get(gid, "#9ecae1"),
+            "color": "#666666",
+            "weight": 0.3,
+            "fillOpacity": 0.55,
+        }
+
+    gj = folium.GeoJson(fc, style_function=style_fn)
+    gj.add_to(m)
+    folium.GeoJsonTooltip(fields=[], aliases=[], sticky=False).add_to(gj)
+
+    thr99 = np.quantile(df_agg["expected"].to_numpy(), 0.99)
+    urgent = df_agg[df_agg["expected"] >= thr99]
+    merged = urgent.merge(GEO_DF[[KEY_COL, "centroid_lat", "centroid_lon"]], on=KEY_COL)
+    for _, r in merged.iterrows():
+        folium.CircleMarker(
+            location=[r["centroid_lat"], r["centroid_lon"]],
+            radius=5, color="#000", fill=True, fill_color="#ff0000",
+            popup=None if not show_popups else folium.Popup("ACİL — üst %1 E[olay]", max_width=150)
+        ).add_to(m)
+
+    return m
+
 # =============================
 # UI — SİDEBAR
 # =============================
@@ -374,19 +459,19 @@ with col1:
         scenario = {}
 
         if ufuk in ("24s", "48s"):
-            df = hourly_forecast_cached(start_dt.isoformat(), horizon_h, scenario)
+            horizon = 24 if ufuk == "24s" else 48
         else:
-            days = int(math.ceil(horizon_h / 24))
-            df = daily_forecast_cached(start_dt.isoformat(), days, scenario)
+            horizon = 7 * 24  # 7g için saat bazında topluyoruz
+        
+        agg = aggregate_fast(start.isoformat(), horizon)
 
-        agg = aggregate_for_view(df)
         st.session_state["forecast"] = df
         st.session_state["agg"] = agg
         st.session_state["patrol"] = None
 
     agg = st.session_state["agg"]
     if agg is not None:
-        m = build_map(agg, st.session_state["patrol"])
+        m = build_map_fast(agg, show_popups=False)
         st_folium(m, width=None, height=620)
 
 with col2:
