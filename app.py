@@ -98,7 +98,27 @@ def nearest_geoid(lat: float, lon: float) -> str | None:
     d2 = (la - lat) ** 2 + (lo - lon) ** 2
     i = int(np.argmin(d2))
     return str(GEO_DF.iloc[i][KEY_COL])
-    
+
+def _extract_latlon_from_ret(ret) -> Tuple[float, float] | None:
+    if not ret:
+        return None
+    lc = ret.get("last_clicked")
+    if lc is None:
+        return None
+    # list/tuple: [lat, lon]
+    if isinstance(lc, (list, tuple)) and len(lc) >= 2:
+        return float(lc[0]), float(lc[1])
+    # dict: {"lat":..,"lng":..} veya {"lat":..,"lon":..} veya {"latlng": {...}}
+    if isinstance(lc, dict):
+        if "lat" in lc and ("lng" in lc or "lon" in lc):
+            return float(lc["lat"]), float(lc.get("lng", lc.get("lon")))
+        ll = lc.get("latlng")
+        if isinstance(ll, (list, tuple)) and len(ll) >= 2:
+            return float(ll[0]), float(ll[1])
+        if isinstance(ll, dict) and "lat" in ll and ("lng" in ll or "lon" in ll):
+            return float(ll["lat"]), float(ll.get("lng", ll.get("lon")))
+    return None
+
 def local_explain(df_agg: pd.DataFrame, geoid: str, start_iso: str, horizon_h: int) -> Dict:
     # Hücre satırı
     row = df_agg.loc[df_agg[KEY_COL] == geoid]
@@ -650,27 +670,25 @@ with col1:
             m,
             width=None,
             height=620,
-            returned_objects=["last_object_clicked", "last_clicked"]  # 0.21 için güvenli
+            returned_objects=["last_object_clicked", "last_clicked"]  # 0.21.x
         )
             
         # tıklanan hücre GEOID'ini yakala
         clicked_gid = None
         if ret:
-            # 1) GeoJSON objesinden doğrudan oku
+            # 1) GeoJSON özelliğinden dene
             obj = ret.get("last_object_clicked") or ret.get("last_active_drawing")
-            if obj and isinstance(obj, dict):
-                props = (
-                    obj.get("properties")
-                    or obj.get("feature", {}).get("properties", {})
-                    or {}
-                )
+            if isinstance(obj, dict):
+                props = (obj.get("properties")
+                         or obj.get("feature", {}).get("properties", {})
+                         or {})
                 clicked_gid = props.get("id") or props.get(KEY_COL)
         
-            # 2) Fallback: sadece koordinat geldiyse en yakın hücreyi bul
+            # 2) Olmazsa yalnız koordinattan en yakın hücre
             if not clicked_gid:
-                last_clicked = ret.get("last_clicked")
-                if isinstance(last_clicked, (list, tuple)) and len(last_clicked) == 2:
-                    lat, lon = float(last_clicked[0]), float(last_clicked[1])
+                latlon = _extract_latlon_from_ret(ret)
+                if latlon:
+                    lat, lon = latlon
                     clicked_gid = nearest_geoid(lat, lon)
 
         # açıklama için gerekli zaman bilgisi
