@@ -210,15 +210,25 @@ def kmeans_like(coords: np.ndarray, weights: np.ndarray, k: int, iters: int = 20
                 centroids[c] = (coords[m] * w).sum(axis=0) / max(1e-6, w.sum())
     return centroids, assign
 
-def allocate_patrols(df_agg: pd.DataFrame, k: int, bands: List[str]) -> Dict:
+def allocate_patrols(df_agg: pd.DataFrame, bands: List[str]) -> Dict:
+    """
+    K'yi kullanıcıdan almak yerine otomatik seçer.
+    Heuristik: k ≈ ceil(sqrt(n/2)), 1..20 aralığına sıkıştırılır.
+    """
     cand = choose_candidates(df_agg, bands)
     if cand.empty:
         return {"zones": []}
-    merged = cand.merge(GEO_DF, on=KEY_COL)
-    coords = merged[["centroid_lon", "centroid_lat"]].to_numpy()
-    weights = merged["expected"].to_numpy()  # <-- burada expected
-    k = min(k, max(1, len(merged) // 3))
-    cents, assign = kmeans_like(coords, weights, k)
+
+    merged  = cand.merge(GEO_DF, on=KEY_COL)
+    coords  = merged[["centroid_lon", "centroid_lat"]].to_numpy()
+    weights = merged["expected"].to_numpy()
+
+    n = len(merged)
+    k_auto = int(np.ceil(np.sqrt(max(1, n) / 2)))
+    k_auto = max(1, min(20, k_auto))
+
+    cents, assign = kmeans_like(coords, weights, k_auto)
+
     zones = []
     for z in range(len(cents)):
         m = assign == z
@@ -234,7 +244,7 @@ def allocate_patrols(df_agg: pd.DataFrame, k: int, bands: List[str]) -> Dict:
             "centroid": {"lat": float(cz[1]), "lon": float(cz[0])},
             "cells": sub[KEY_COL].astype(str).tolist(),
             "route": route,
-            "expected_risk": float(sub["expected"].mean()),  # raporlamada expected
+            "expected_risk": float(sub["expected"].mean()),
         })
     return {"zones": zones}
 
@@ -329,17 +339,22 @@ def _mark_auto_patrol():
 st.sidebar.header("Ayarlar")
 ufuk = st.sidebar.radio("Ufuk", options=["24s", "48s", "7g"], index=0, horizontal=True)
 
+# yeni: kullanıcı "şu andan + X saat sonra başlat"
+start_offset = st.sidebar.slider("Başlangıç (şimdiden + saat)", 0, 72, 0)
+
 st.sidebar.header("Devriye Tahsisi")
-K = st.sidebar.slider("Devriye sayısı (K)", 1, 20, 6, 1,
-                      key="k_slider", on_change=_mark_auto_patrol)
-bands = st.sidebar.multiselect("Kapsanacak risk bandları",
-                               list(RISK_BANDS.keys()),
-                               default=["Yüksek", "Orta"],
-                               key="bands_select", on_change=_mark_auto_patrol)
+bands = st.sidebar.multiselect(
+    "Kapsanacak risk bandları (devriye için)",
+    list(RISK_BANDS.keys()),
+    default=["Yüksek", "Orta"],
+    key="bands_select"
+)
 
 colA, colB = st.sidebar.columns(2)
 btn_predict = colA.button("Tahmin et")
 btn_patrol  = colB.button("Devriye öner", disabled=st.session_state.get("agg") is None)
+
+st.sidebar.caption("• Tahmin et: risk haritasını günceller.  • Devriye öner: seçili bandlardaki bölgelerden otomatik küme ve rota üretir.")
 
 st.sidebar.caption("• Tahmin et: risk haritasını günceller.  • Devriye öner: K kümeye bölüp rotaları çıkarır.")
 
@@ -360,7 +375,11 @@ col1, col2 = st.columns([2.4, 1.0])
 with col1:
     st.caption(f"Son güncelleme (SF): {now_sf_iso()}")
     if btn_predict or st.session_state["agg"] is None:
-        start = (datetime.utcnow() + timedelta(hours=SF_TZ_OFFSET)).replace(minute=0, second=0, microsecond=0)
+        start = (
+            datetime.utcnow()
+            + timedelta(hours=SF_TZ_OFFSET)    
+            + timedelta(hours=start_offset)      
+        ).replace(minute=0, second=0, microsecond=0)
         scenario = {}
         
         if ufuk in ("24s", "48s"):
@@ -408,7 +427,7 @@ with col2:
     # Butona basınca veya K/bands değişince yeniden öner
     if st.session_state.get("agg") is not None and (btn_patrol or st.session_state.get("auto_patrol", False)):
         st.session_state["patrol"] = allocate_patrols(
-            st.session_state["agg"], K, bands or list(RISK_BANDS.keys())
+            st.session_state["agg"], bands or list(RISK_BANDS.keys())
         )
         # bir kez çalışsın, bayrağı sıfırla
         st.session_state["auto_patrol"] = False
