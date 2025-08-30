@@ -93,18 +93,9 @@ GEO_DF, GEO_FEATURES = load_geoid_layer_cached("data/sf_cells.geojson", key_fiel
 if GEO_DF.empty:
     st.error("GEOJSON yüklendi ama satır gelmedi. 'data/sf_cells.geojson' içinde 'properties.geoid' eksik olabilir.")
 
-def scenario_multipliers(scenario: Dict) -> float:
-    mult = 1.0
-    if scenario.get("hava") == "Kötümser":
-        mult *= 1.10
-    elif scenario.get("hava") == "İyimser":
-        mult *= 0.95
-    if scenario.get("etkinlik", True):
-        mult *= 1.05
-    if scenario.get("cagri_modeli") == "Yan Model":
-        mult *= 1.03
-    return mult
-
+def scenario_multipliers(_scenario: Dict) -> float:
+    # Gerçek hava/etkinlik verisi pipeline’dan geldiği için kullanıcı senaryosu yok
+    return 1.0
 
 def base_spatial_intensity(lon: float, lat: float) -> float:
     peak1 = math.exp(-(((lon + 122.41) ** 2) / 0.0008 + ((lat - 37.78) ** 2) / 0.0005))
@@ -293,23 +284,29 @@ def build_map(df_agg: pd.DataFrame, patrol: Dict | None = None) -> folium.Map:
             folium.PolyLine(z["route"], tooltip=f"{z['id']} rota").add_to(m)
             folium.Marker([z["centroid"]["lat"], z["centroid"]["lon"]], icon=folium.DivIcon(html=f"<div style='background:#111;color:#fff;padding:2px 6px;border-radius:6px'> {z['id']} </div>")).add_to(m)
     return m
-
+    
+def _mark_auto_patrol():
+    st.session_state["auto_patrol"] = True
+    
 # =============================
 # UI — SİDEBAR
 # =============================
 st.sidebar.header("Ayarlar")
-ufuk = st.sidebar.radio("Ufuk", options=["24s", "72s", "7g"], index=0, horizontal=True)
-hava = st.sidebar.radio("Hava senaryosu", options=["Temel", "Kötümser", "İyimser"], index=0)
-etkinlik = st.sidebar.checkbox("Etkinlik etkisi açık", value=True)
-cagri = st.sidebar.radio("911/311 senaryosu", options=["Naif", "Yan Model"], index=0)
+ufuk = st.sidebar.radio("Ufuk", options=["24s", "48s", "7g"], index=0, horizontal=True)
 
 st.sidebar.header("Devriye Tahsisi")
-K = st.sidebar.slider("Devriye sayısı (K)", 1, 20, 6, 1)
-bands = st.sidebar.multiselect("Kapsanacak risk bandları", list(RISK_BANDS.keys()), default=["Yüksek", "Orta"])
+K = st.sidebar.slider("Devriye sayısı (K)", 1, 20, 6, 1,
+                      key="k_slider", on_change=_mark_auto_patrol)
+bands = st.sidebar.multiselect("Kapsanacak risk bandları",
+                               list(RISK_BANDS.keys()),
+                               default=["Yüksek", "Orta"],
+                               key="bands_select", on_change=_mark_auto_patrol)
 
 colA, colB = st.sidebar.columns(2)
 btn_predict = colA.button("Tahmin et")
-btn_patrol = colB.button("Devriye öner")
+btn_patrol  = colB.button("Devriye öner", disabled=st.session_state.get("agg") is None)
+
+st.sidebar.caption("• Tahmin et: risk haritasını günceller.  • Devriye öner: K kümeye bölüp rotaları çıkarır.")
 
 # =============================
 # STATE
@@ -318,6 +315,7 @@ if "forecast" not in st.session_state:
     st.session_state["forecast"] = None
     st.session_state["agg"] = None
     st.session_state["patrol"] = None
+    st.session_state["auto_patrol"] = False  
 
 # =============================
 # ANA BÖLÜM
@@ -328,10 +326,10 @@ with col1:
     st.caption(f"Son güncelleme (SF): {now_sf_iso()}")
     if btn_predict or st.session_state["agg"] is None:
         start = (datetime.utcnow() + timedelta(hours=SF_TZ_OFFSET)).replace(minute=0, second=0, microsecond=0)
-        scenario = {"hava": hava, "etkinlik": etkinlik, "cagri_modeli": cagri}
+        scenario = {}
         
-        if ufuk in ("24s", "72s"):
-            horizon = 24 if ufuk == "24s" else 72
+        if ufuk in ("24s", "48s"):
+            horizon = 24 if ufuk == "24s" else 48
             df = hourly_forecast_cached(start.isoformat(), horizon, scenario)
         else:
             df = daily_forecast_cached(start.isoformat(), 7, scenario)
@@ -360,14 +358,21 @@ with col2:
     st.subheader("En riskli bölgeler")
     if st.session_state["agg"] is not None:
         st.dataframe(top_risky_table(st.session_state["agg"]))
-
+    
     st.subheader("Devriye özeti")
-    if btn_patrol and st.session_state["agg"] is not None:
-        patrol = allocate_patrols(st.session_state["agg"], K, bands or list(RISK_BANDS.keys()))
-        st.session_state["patrol"] = patrol
-    patrol = st.session_state["patrol"]
+    
+    # Butona basınca veya K/bands değişince yeniden öner
+    if st.session_state.get("agg") is not None and (btn_patrol or st.session_state.get("auto_patrol", False)):
+        st.session_state["patrol"] = allocate_patrols(
+            st.session_state["agg"], K, bands or list(RISK_BANDS.keys())
+        )
+        # bir kez çalışsın, bayrağı sıfırla
+        st.session_state["auto_patrol"] = False
+    
+    patrol = st.session_state.get("patrol")
     if patrol:
-        rows = [{"zone": z["id"], "cells": len(z["cells"]), "avg_risk": round(z["expected_risk"], 3)} for z in patrol.get("zones", [])]
+        rows = [{"zone": z["id"], "cells": len(z["cells"]),
+                 "avg_risk": round(z["expected_risk"], 3)} for z in patrol.get("zones", [])]
         st.dataframe(pd.DataFrame(rows))
 
     st.subheader("Dışa aktar")
