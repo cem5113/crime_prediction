@@ -1,13 +1,6 @@
-streamlit>=1.32,<1.40
+streamlit==1.36.0
 pandas==2.2.2
 numpy==1.26.4
 requests==2.32.3
-joblib==1.4.2
-scikit-learn==1.5.1
-geopandas==0.14.4
-shapely==2.0.4
-pyproj==3.6.1
-pyogrio==0.7.2
 folium==0.16.0
 streamlit-folium==0.21.1
-pydeck>=0.8,<0.10
