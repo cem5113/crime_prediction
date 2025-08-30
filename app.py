@@ -404,49 +404,6 @@ def top_risky_table(df_agg: pd.DataFrame, n: int = 12) -> pd.DataFrame:
 
     return tab.rename(columns={"expected": "E[olay] (λ)"})
 
-# =============================
-# RAPOR METRİK YARDIMCILARI
-# =============================
-@st.cache_data(show_spinner=False)
-def load_events(path: str = "data/events.csv") -> pd.DataFrame:
-    """Gerçek olaylar. Sütunlar: ts (ISO/datetime), geoid (str), type (opsiyonel)."""
-    p = Path(path)
-    if not p.exists():
-        return pd.DataFrame(columns=["ts", KEY_COL, "type"])
-    df = pd.read_csv(p, parse_dates=["ts"])
-    df[KEY_COL] = df[KEY_COL].astype(str)
-    return df
-
-def slice_events(events: pd.DataFrame, start_iso: str, horizon_h: int) -> pd.DataFrame:
-    start = datetime.fromisoformat(start_iso)
-    end = start + timedelta(hours=horizon_h)
-    m = (events["ts"] >= start) & (events["ts"] < end)
-    return events.loc[m, [KEY_COL, "ts", "type"]].copy()
-
-def prep_eval_frames(agg: pd.DataFrame, ev: pd.DataFrame) -> pd.DataFrame:
-    """Agg (beklenen λ) ile olayları aynı tabloya getirir; p=1-exp(-λ), y=1{>=1}."""
-    cnts = ev.groupby(KEY_COL).size().rename("y_count")  # hücrede toplam olay sayısı
-    ybin = (cnts > 0).astype(int).rename("y")
-    out = (
-        agg[[KEY_COL, "expected"]]
-        .merge(ybin, on=KEY_COL, how="left")
-        .merge(cnts, on=KEY_COL, how="left")
-        .fillna({"y": 0, "y_count": 0})
-    )
-    out["p"] = 1.0 - np.exp(-out["expected"].clip(lower=0))
-    return out
-
-def pai_at_k(eval_df: pd.DataFrame, k_pct: int) -> tuple[float, float]:
-    """PAI@K (% alan içinde olay payı / K). Olay yoksa (NaN) döner."""
-    if eval_df["y_count"].sum() == 0:
-        return float("nan"), 0.0
-    frac = k_pct / 100.0
-    n = len(eval_df)
-    top_k = max(1, int(round(n * frac)))
-    d = eval_df.sort_values("expected", ascending=False).head(top_k)
-    event_share = d["y_count"].sum() / eval_df["y_count"].sum()
-    return (event_share / frac), event_share
-
 # --- Devriye kümeleme ---
 def kmeans_like(coords: np.ndarray, weights: np.ndarray, k: int, iters: int = 20):
     n = len(coords)
@@ -721,12 +678,6 @@ def build_map_fast(df_agg: pd.DataFrame, show_popups: bool = False, patrol: Dict
 # =============================
 # UI — SİDEBAR
 # =============================
-st.sidebar.markdown("### Görünüm")
-sekme = st.sidebar.radio("",
-    options=["Operasyon", "Raporlar"], index=0, horizontal=True
-)
-st.sidebar.divider()
-
 st.sidebar.header("Ayarlar")
 ufuk = st.sidebar.radio("Ufuk", options=["24s", "48s", "7g"], index=0, horizontal=True)
 
@@ -772,320 +723,199 @@ if "forecast" not in st.session_state:
 # =============================
 # ANA BÖLÜM
 # =============================
-if sekme == "Operasyon":
-    col1, col2 = st.columns([2.4, 1.0])
-    with col1:
-        st.caption(f"Son güncelleme (SF): {now_sf_iso()}")
-    
-        if btn_predict or st.session_state.get("agg") is None:
-            start_dt = (
-                datetime.utcnow()
-                + timedelta(hours=SF_TZ_OFFSET + start_h)
-            ).replace(minute=0, second=0, microsecond=0)
-    
-            horizon_h = max(1, end_h - start_h)
-            start_iso = start_dt.isoformat()
-    
-            # Hızlı agregasyon
-            agg = aggregate_fast(start_iso, horizon_h)
-    
-            st.session_state["forecast"] = None
-            st.session_state["agg"] = agg
-            st.session_state["patrol"] = None
-            st.session_state["start_iso"] = start_iso
-            st.session_state["horizon_h"] = horizon_h
-    
-        agg = st.session_state.get("agg")
-        
-        if agg is not None:
-            # haritayı ÇİZ ve DÖNÜŞ değerini AL (tek çağrı!)
-            m = build_map_fast(
-                agg,
-                show_popups=show_popups,
-                patrol=st.session_state.get("patrol")
-            )
-            ret = st_folium(
-                m,
-                width=None,
-                height=540,
-                returned_objects=["last_object_clicked", "last_clicked"]  # 0.21.x
-            )
-                
-            # tıklanan hücre GEOID'ini yakala
-            clicked_gid = None
-            if ret:
-                # 1) GeoJSON özelliğinden dene
-                obj = ret.get("last_object_clicked") or ret.get("last_active_drawing")
-                if isinstance(obj, dict):
-                    props = (obj.get("properties")
-                             or obj.get("feature", {}).get("properties", {})
-                             or {})
-                    clicked_gid = props.get("id") or props.get(KEY_COL)
-            
-                # 2) Olmazsa yalnız koordinattan en yakın hücre
-                if not clicked_gid:
-                    latlon = _extract_latlon_from_ret(ret)
-                    if latlon:
-                        lat, lon = latlon
-                        clicked_gid = nearest_geoid(lat, lon)
-    
-            # açıklama için gerekli zaman bilgisi
-            start_iso  = st.session_state.get("start_iso")
-            horizon_h  = st.session_state.get("horizon_h")
-            if (start_iso is None) or (horizon_h is None):
-                # butona basılmadan önce de çalışabilsin diye emniyet
-                start_dt = (datetime.utcnow() + timedelta(hours=SF_TZ_OFFSET + start_h)).replace(minute=0, second=0, microsecond=0)
-                start_iso = start_dt.isoformat()
-                horizon_h = max(1, end_h - start_h)
-        
-            # tıklanınca state'e açıklamayı yaz
-            if clicked_gid:
-                st.session_state["explain"] = {
-                    "geoid": clicked_gid,
-                    "data": local_explain(agg, clicked_gid, start_iso, horizon_h),
-                }
-        
-            # --- SOLA (haritanın ALTINA) AÇIKLAMA PANELİ ---
-            st.markdown("### Açıklama (seçili hücre)")
-            info = st.session_state.get("explain")
-            if info and info.get("data"):
-                geoid = info["geoid"]
-                ex = info["data"]
-        
-                c1, c2, c3 = st.columns(3)
-                c1.metric("Hücre", geoid)
-                c2.metric("E[olay] (λ)", f"{ex['expected']:.2f}")
-                c3.metric("Öncelik", ex["tier"])
-        
-                # 1) Öne çıkan suçlar
-                top_txt = ", ".join([f"{t} ({v:.2f}λ)" for t, v in ex["top_types"]])
-                st.caption("En olası 3 suç")
-                st.write(top_txt)
-                
-                # 2) Saha özeti (kolluk gözüyle)
-                win_text = risk_window_text(start_iso, horizon_h)
-                conf_txt = confidence_label(ex["q10"], ex["q90"])
-                total = sum(ex["contribs"].values()) or 1.0
-                drivers = ", ".join([f"{k} %{round(100*v/total)}" for k, v in ex["contribs"].items()])
-                tips = actionable_cues(ex["top_types"])
-                
-                st.markdown("#### Saha özeti")
-                st.markdown(
-                    f"- **Risk penceresi:** {win_text}\n"
-                    f"- **Sürücüler:** {drivers}\n"
-                    f"- **Güven:** {conf_txt} (q10={ex['q10']:.2f}, q90={ex['q90']:.2f})\n"
-                    f"- **Eylem önerileri:**"
-                )
-                for t in tips:
-                    st.markdown(f"  - {t}")
-                
-                # 3) Katkılar (Altair layer)
-                contrib_df = (
-                    pd.Series(ex["contribs"], name="lambda")
-                      .reset_index()
-                      .rename(columns={"index": "Bileşen"})
-                )
-                # emniyet: sayısal olsun
-                contrib_df["lambda"] = pd.to_numeric(contrib_df["lambda"], errors="coerce").fillna(0)
-                
-                bars = alt.Chart(contrib_df).mark_bar().encode(
-                    y=alt.Y("Bileşen:N", sort="-x", title=None),
-                    x=alt.X("lambda:Q", title="Katkı (λ)"),
-                    tooltip=["Bileşen:N", alt.Tooltip("lambda:Q", format=".2f", title="Katkı (λ)")],
-                ).properties(height=160)
-                
-                labels = alt.Chart(contrib_df).mark_text(align="left", dx=4).encode(
-                    y="Bileşen:N", x="lambda:Q", text=alt.Text("lambda:Q", format=".2f")
-                )
-                
-                layer = alt.layer(bars, labels, data=contrib_df)  # << kritik: data root'ta
-                st.altair_chart(layer, use_container_width=True)
-                            
-                # 4) Radyo anonsu – kopyalanabilir tek cümle
-                lead1 = ex["top_types"][0][0] if ex["top_types"] else "-"
-                lead2 = ex["top_types"][1][0] if len(ex["top_types"]) > 1 else "-"
-                first_tip = tips[0] if tips else "-"
-                st.caption("Radyo anonsu")
-                st.code(
-                    f"{geoid}: {win_text} aralığında risk **{ex['tier'].lower()}**. "
-                    f"Öncelik: {lead1}, {lead2}. E[olay]={ex['expected']:.1f} (güven {conf_txt}). "
-                    f"Ekip odak: {first_tip}.",
-                    language=None
-                )
-    
-            else:
-                st.info("Haritada bir hücreye tıklarsanız açıklama burada görünecek.")
-        else:
-            st.info("Önce ‘Tahmin et’ ile bir tahmin üretin.")
-    
-    with col2:
-        st.subheader("KPI")
-        if st.session_state["agg"] is not None:
-            a = st.session_state["agg"]
-            kpi_expected = round(float(a["expected"].sum()), 2)
-            high = int((a["tier"] == "Yüksek").sum())
-            mid  = int((a["tier"] == "Orta").sum())
-            low  = int((a["tier"] == "Hafif").sum())
-            c1, c2, c3, c4 = st.columns(4)
-            c1.metric("Beklenen olay (ufuk)", kpi_expected)
-            c2.metric("Yüksek", high); c3.metric("Orta", mid); c4.metric("Düşük", low)
-    
-            with st.expander("Öncelik kümeleri — geoid listeleri"):
-                cc1, cc2, cc3 = st.columns(3)
-                cc1.write(", ".join(a.loc[a["tier"]=="Yüksek", KEY_COL].astype(str).tolist()) or "—")
-                cc2.write(", ".join(a.loc[a["tier"]=="Orta",   KEY_COL].astype(str).tolist()) or "—")
-                cc3.write(", ".join(a.loc[a["tier"]=="Hafif",  KEY_COL].astype(str).tolist()) or "—")
-    
-        st.subheader("En riskli bölgeler")
-        if st.session_state["agg"] is not None:
-            st.dataframe(top_risky_table(st.session_state["agg"]), use_container_width=True, height=300)
-    
-        st.subheader("Devriye özeti")
-        if st.session_state.get("agg") is not None and btn_patrol:
-            st.session_state["patrol"] = allocate_patrols(
-                st.session_state["agg"],
-                k_planned=K_planned,
-                duty_minutes=int(duty_minutes),
-                cell_minutes=int(cell_minutes),
-                travel_overhead=0.40,
-            )
-    
-        patrol = st.session_state.get("patrol")
-        if patrol and patrol.get("zones"):
-            rows = [{
-                "zone": z["id"],
-                "cells_planned": z["planned_cells"],
-                "capacity_cells": z["capacity_cells"],
-                "eta_minutes": z["eta_minutes"],
-                "utilization_%": z["utilization_pct"],
-                "avg_risk(E[olay])": round(z["expected_risk"], 2),
-            } for z in patrol["zones"]]
-            st.dataframe(pd.DataFrame(rows), use_container_width=True, height=260)
-    
-        st.subheader("Dışa aktar")
-        if st.session_state["agg"] is not None:
-            csv = st.session_state["agg"].to_csv(index=False).encode("utf-8")
-            st.download_button("CSV indir", data=csv,
-                               file_name=f"risk_export_{int(time.time())}.csv",
-                               mime="text/csv")
+col1, col2 = st.columns([2.4, 1.0])
 
-# =============================
-# RAPORLAR
-# =============================
-elif sekme == "Raporlar":
-    st.header("Haftalık / Pencere Bazlı Raporlar")
+with col1:
+    st.caption(f"Son güncelleme (SF): {now_sf_iso()}")
 
-    # Operasyon sekmesinde kullanılan zaman penceresini al (yoksa şimdi hesapla)
-    start_iso = st.session_state.get("start_iso")
-    horizon_h = st.session_state.get("horizon_h")
-    if (start_iso is None) or (horizon_h is None):
+    if btn_predict or st.session_state.get("agg") is None:
         start_dt = (
             datetime.utcnow()
-            + timedelta(hours=SF_TZ_OFFSET + st.session_state.get("start_h", 0))
+            + timedelta(hours=SF_TZ_OFFSET + start_h)
         ).replace(minute=0, second=0, microsecond=0)
+
+        horizon_h = max(1, end_h - start_h)
         start_iso = start_dt.isoformat()
-        horizon_h = 24  # güvenli varsayılan
 
-    # Tahmin (agg) yoksa üret
-    agg = st.session_state.get("agg")
-    if agg is None:
+        # Hızlı agregasyon
         agg = aggregate_fast(start_iso, horizon_h)
+
+        st.session_state["forecast"] = None
         st.session_state["agg"] = agg
+        st.session_state["patrol"] = None
+        st.session_state["start_iso"] = start_iso
+        st.session_state["horizon_h"] = horizon_h
 
-    # Gerçek olayları yükle
-    events = load_events("data/events.csv")
-    if events.empty:
-        st.warning("`data/events.csv` bulunamadı ya da boş. Sütunlar: ts, geoid [, type].")
+    agg = st.session_state.get("agg")
+    
+    if agg is not None:
+        # haritayı ÇİZ ve DÖNÜŞ değerini AL (tek çağrı!)
+        m = build_map_fast(
+            agg,
+            show_popups=show_popups,
+            patrol=st.session_state.get("patrol")
+        )
+        ret = st_folium(
+            m,
+            width=None,
+            height=540,
+            returned_objects=["last_object_clicked", "last_clicked"]  # 0.21.x
+        )
+            
+        # tıklanan hücre GEOID'ini yakala
+        clicked_gid = None
+        if ret:
+            # 1) GeoJSON özelliğinden dene
+            obj = ret.get("last_object_clicked") or ret.get("last_active_drawing")
+            if isinstance(obj, dict):
+                props = (obj.get("properties")
+                         or obj.get("feature", {}).get("properties", {})
+                         or {})
+                clicked_gid = props.get("id") or props.get(KEY_COL)
+        
+            # 2) Olmazsa yalnız koordinattan en yakın hücre
+            if not clicked_gid:
+                latlon = _extract_latlon_from_ret(ret)
+                if latlon:
+                    lat, lon = latlon
+                    clicked_gid = nearest_geoid(lat, lon)
+
+        # açıklama için gerekli zaman bilgisi
+        start_iso  = st.session_state.get("start_iso")
+        horizon_h  = st.session_state.get("horizon_h")
+        if (start_iso is None) or (horizon_h is None):
+            # butona basılmadan önce de çalışabilsin diye emniyet
+            start_dt = (datetime.utcnow() + timedelta(hours=SF_TZ_OFFSET + start_h)).replace(minute=0, second=0, microsecond=0)
+            start_iso = start_dt.isoformat()
+            horizon_h = max(1, end_h - start_h)
+    
+        # tıklanınca state'e açıklamayı yaz
+        if clicked_gid:
+            st.session_state["explain"] = {
+                "geoid": clicked_gid,
+                "data": local_explain(agg, clicked_gid, start_iso, horizon_h),
+            }
+    
+        # --- SOLA (haritanın ALTINA) AÇIKLAMA PANELİ ---
+        st.markdown("### Açıklama (seçili hücre)")
+        info = st.session_state.get("explain")
+        if info and info.get("data"):
+            geoid = info["geoid"]
+            ex = info["data"]
+    
+            c1, c2, c3 = st.columns(3)
+            c1.metric("Hücre", geoid)
+            c2.metric("E[olay] (λ)", f"{ex['expected']:.2f}")
+            c3.metric("Öncelik", ex["tier"])
+    
+            # 1) Öne çıkan suçlar
+            top_txt = ", ".join([f"{t} ({v:.2f}λ)" for t, v in ex["top_types"]])
+            st.caption("En olası 3 suç")
+            st.write(top_txt)
+            
+            # 2) Saha özeti (kolluk gözüyle)
+            win_text = risk_window_text(start_iso, horizon_h)
+            conf_txt = confidence_label(ex["q10"], ex["q90"])
+            total = sum(ex["contribs"].values()) or 1.0
+            drivers = ", ".join([f"{k} %{round(100*v/total)}" for k, v in ex["contribs"].items()])
+            tips = actionable_cues(ex["top_types"])
+            
+            st.markdown("#### Saha özeti")
+            st.markdown(
+                f"- **Risk penceresi:** {win_text}\n"
+                f"- **Sürücüler:** {drivers}\n"
+                f"- **Güven:** {conf_txt} (q10={ex['q10']:.2f}, q90={ex['q90']:.2f})\n"
+                f"- **Eylem önerileri:**"
+            )
+            for t in tips:
+                st.markdown(f"  - {t}")
+            
+            # 3) Katkılar (Altair layer)
+            contrib_df = (
+                pd.Series(ex["contribs"], name="lambda")
+                  .reset_index()
+                  .rename(columns={"index": "Bileşen"})
+            )
+            # emniyet: sayısal olsun
+            contrib_df["lambda"] = pd.to_numeric(contrib_df["lambda"], errors="coerce").fillna(0)
+            
+            bars = alt.Chart(contrib_df).mark_bar().encode(
+                y=alt.Y("Bileşen:N", sort="-x", title=None),
+                x=alt.X("lambda:Q", title="Katkı (λ)"),
+                tooltip=["Bileşen:N", alt.Tooltip("lambda:Q", format=".2f", title="Katkı (λ)")],
+            ).properties(height=160)
+            
+            labels = alt.Chart(contrib_df).mark_text(align="left", dx=4).encode(
+                y="Bileşen:N", x="lambda:Q", text=alt.Text("lambda:Q", format=".2f")
+            )
+            
+            layer = alt.layer(bars, labels, data=contrib_df)  # << kritik: data root'ta
+            st.altair_chart(layer, use_container_width=True)
+                        
+            # 4) Radyo anonsu – kopyalanabilir tek cümle
+            lead1 = ex["top_types"][0][0] if ex["top_types"] else "-"
+            lead2 = ex["top_types"][1][0] if len(ex["top_types"]) > 1 else "-"
+            first_tip = tips[0] if tips else "-"
+            st.caption("Radyo anonsu")
+            st.code(
+                f"{geoid}: {win_text} aralığında risk **{ex['tier'].lower()}**. "
+                f"Öncelik: {lead1}, {lead2}. E[olay]={ex['expected']:.1f} (güven {conf_txt}). "
+                f"Ekip odak: {first_tip}.",
+                language=None
+            )
+
+        else:
+            st.info("Haritada bir hücreye tıklarsanız açıklama burada görünecek.")
     else:
-        ev_win = slice_events(events, start_iso, horizon_h)
-        eval_df = prep_eval_frames(agg, ev_win)
+        st.info("Önce ‘Tahmin et’ ile bir tahmin üretin.")
 
-        # --- PAI@K (5/10/20) ve yakalama eğrisi
-        pai_rows = []
-        for K in (5, 10, 20):
-            pai, share = pai_at_k(eval_df, K)
-            pai_rows.append({"K%": K, "PAI": pai, "Olay payı": share})
+with col2:
+    st.subheader("KPI")
+    if st.session_state["agg"] is not None:
+        a = st.session_state["agg"]
+        kpi_expected = round(float(a["expected"].sum()), 2)
+        high = int((a["tier"] == "Yüksek").sum())
+        mid  = int((a["tier"] == "Orta").sum())
+        low  = int((a["tier"] == "Hafif").sum())
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("Beklenen olay (ufuk)", kpi_expected)
+        c2.metric("Yüksek", high); c3.metric("Orta", mid); c4.metric("Düşük", low)
 
-        dsort = eval_df.sort_values("p", ascending=False).reset_index(drop=True)
-        dsort["alan_pay"] = (np.arange(len(dsort)) + 1) / len(dsort)
-        total_events = max(1, dsort["y_count"].sum())
-        dsort["olay_kum"] = dsort["y_count"].cumsum()
-        dsort["olay_pay"] = dsort["olay_kum"] / total_events
+        with st.expander("Öncelik kümeleri — geoid listeleri"):
+            cc1, cc2, cc3 = st.columns(3)
+            cc1.write(", ".join(a.loc[a["tier"]=="Yüksek", KEY_COL].astype(str).tolist()) or "—")
+            cc2.write(", ".join(a.loc[a["tier"]=="Orta",   KEY_COL].astype(str).tolist()) or "—")
+            cc3.write(", ".join(a.loc[a["tier"]=="Hafif",  KEY_COL].astype(str).tolist()) or "—")
 
-        cap_chart = (
-            alt.Chart(dsort)
-            .mark_line(point=True)
-            .encode(
-                x=alt.X("alan_pay:Q", title="Alan payı (kümülatif)", axis=alt.Axis(format="%")),
-                y=alt.Y("olay_pay:Q", title="Olay payı (kümülatif)", axis=alt.Axis(format="%")),
-                tooltip=[
-                    alt.Tooltip("alan_pay:Q", format=".0%", title="Alan"),
-                    alt.Tooltip("olay_pay:Q", format=".0%", title="Olay"),
-                ],
-            )
-            .properties(height=220)
+    st.subheader("En riskli bölgeler")
+    if st.session_state["agg"] is not None:
+        st.dataframe(top_risky_table(st.session_state["agg"]), use_container_width=True, height=300)
+
+    st.subheader("Devriye özeti")
+    if st.session_state.get("agg") is not None and btn_patrol:
+        st.session_state["patrol"] = allocate_patrols(
+            st.session_state["agg"],
+            k_planned=K_planned,
+            duty_minutes=int(duty_minutes),
+            cell_minutes=int(cell_minutes),
+            travel_overhead=0.40,
         )
 
-        # --- Kalibrasyon (reliability) & Brier & Kapsama
-        bins = np.linspace(0, 1, 11)
-        dsort["bin"] = np.digitize(dsort["p"], bins, right=True) - 1
-        reli = dsort.groupby("bin", as_index=False).agg(
-            p_hat=("p", "mean"), y_rate=("y", "mean"), n=("y", "size")
-        ).dropna()
+    patrol = st.session_state.get("patrol")
+    if patrol and patrol.get("zones"):
+        rows = [{
+            "zone": z["id"],
+            "cells_planned": z["planned_cells"],
+            "capacity_cells": z["capacity_cells"],
+            "eta_minutes": z["eta_minutes"],
+            "utilization_%": z["utilization_pct"],
+            "avg_risk(E[olay])": round(z["expected_risk"], 2),
+        } for z in patrol["zones"]]
+        st.dataframe(pd.DataFrame(rows), use_container_width=True, height=260)
 
-        reli_chart = (
-            alt.Chart(reli).mark_line(point=True)
-            .encode(
-                x=alt.X("p_hat:Q", title="Tahmin olasılığı"),
-                y=alt.Y("y_rate:Q", title="Gerçekleşme oranı"),
-                size=alt.Size("n:Q", legend=None),
-                tooltip=["p_hat", "y_rate", "n"],
-            )
-            .properties(height=220)
-        )
-        diag = alt.Chart(pd.DataFrame({"x": [0, 1], "y": [0, 1]})).mark_rule().encode(x="x", y="y")
-
-        brier = float(np.mean((eval_df["p"] - eval_df["y"]) ** 2))
-        low = np.maximum(0.0, eval_df["p"] - 0.08)
-        high = np.minimum(1.0, eval_df["p"] + 0.08)
-        coverage = float(((eval_df["y"] >= low) & (eval_df["y"] <= high)).mean())
-
-        # --- Maliyet eğrisi (FP/FN)
-        st.markdown("#### Maliyet eğrisi")
-        c1, c2 = st.columns(2)
-        c_fp = c1.slider("Yanlış alarm maliyeti (FP)", 0.0, 5.0, 1.0, 0.1)
-        c_fn = c2.slider("Kaçırma maliyeti (FN)", 0.0, 5.0, 3.0, 0.1)
-
-        ths = np.linspace(0, 1, 51)
-        costs = []
-        for t in ths:
-            yhat = (eval_df["p"] >= t).astype(int)
-            fp = int(((yhat == 1) & (eval_df["y"] == 0)).sum())
-            fn = int(((yhat == 0) & (eval_df["y"] == 1)).sum())
-            costs.append({"eşik": t, "maliyet": c_fp * fp + c_fn * fn})
-        cost_df = pd.DataFrame(costs)
-        cost_chart = alt.Chart(cost_df).mark_line().encode(
-            x=alt.X("eşik:Q", title="Eşik"),
-            y=alt.Y("maliyet:Q", title="Toplam maliyet"),
-            tooltip=["eşik", "maliyet"],
-        ).properties(height=220)
-
-        # --- Sunum
-        st.markdown("#### Özet metrikler")
-        m1, m2, m3 = st.columns(3)
-        pai10 = next((r for r in pai_rows if r["K%"] == 10), {"PAI": float("nan")})
-        m1.metric("PAI@10", "—" if np.isnan(pai10["PAI"]) else f"{pai10['PAI']:.2f}")
-        m2.metric("Brier", f"{brier:.3f}")
-        m3.metric("Kapsama (q10–q90±0.08)", f"{coverage:.0%}")
-
-        st.markdown("#### Yakalama eğrisi (Alan payı → Olay payı)")
-        st.altair_chart(cap_chart, use_container_width=True)
-
-        st.markdown("#### Kalibrasyon (Reliability)")
-        st.altair_chart(reli_chart + diag, use_container_width=True)
-
-        st.markdown("#### PAI tablosu")
-        st.dataframe(pd.DataFrame(pai_rows), use_container_width=True)
-
-        st.altair_chart(cost_chart, use_container_width=True)
-
+    st.subheader("Dışa aktar")
+    if st.session_state["agg"] is not None:
+        csv = st.session_state["agg"].to_csv(index=False).encode("utf-8")
+        st.download_button("CSV indir", data=csv,
+                           file_name=f"risk_export_{int(time.time())}.csv",
+                           mime="text/csv")
