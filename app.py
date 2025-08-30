@@ -10,8 +10,45 @@ import streamlit as st
 import folium
 from streamlit_folium import st_folium
 import json
-import altair as alt
 from pathlib import Path
+
+import altair as alt  
+
+SMALL_UI_CSS = """
+<style>
+/* Genel yazı boyutu */
+html, body, [class*="css"] { font-size: 14px; }
+
+/* Başlıklar */
+h1 { font-size: 1.6rem; margin: .1rem 0 .6rem 0; }
+h2 { font-size: 1.15rem; margin: .4rem 0; }
+h3 { font-size: 1.00rem; margin: .3rem 0; }
+
+/* Ana içerik ve sidebar iç boşlukları */
+section.main > div.block-container { padding-top: .5rem; padding-bottom: .25rem; }
+[data-testid="stSidebar"] .block-container { padding-top: .6rem; padding-bottom: .6rem; }
+
+/* Metric kartları */
+[data-testid="stMetricValue"] { font-size: 1.25rem; }
+[data-testid="stMetricLabel"] { font-size: .80rem; color: #666; }
+
+/* Dataframe yazısı */
+[data-testid="stDataFrame"] { font-size: .85rem; }
+
+/* Giriş bileşenleri etiketleri */
+[data-testid="stNumberInput"] label,
+[data-testid="stSlider"] label,
+[role="radiogroup"] label { font-size: .9rem; }
+
+/* Expander başlığı */
+.st-expanderHeader, [data-baseweb="accordion"] { font-size: .9rem; }
+
+/* (İsteğe bağlı) üst menü / footer gizle */
+#MainMenu { visibility: hidden; }
+footer { visibility: hidden; }
+</style>
+"""
+st.markdown(SMALL_UI_CSS, unsafe_allow_html=True)
 
 # =============================
 # SAYFA AYARLARI
@@ -718,7 +755,7 @@ with col1:
         ret = st_folium(
             m,
             width=None,
-            height=620,
+            height=540,
             returned_objects=["last_object_clicked", "last_clicked"]  # 0.21.x
         )
             
@@ -805,7 +842,7 @@ with col1:
                     x=alt.X("lambda:Q", title="Katkı (λ)"),
                     tooltip=["Bileşen:N", alt.Tooltip("lambda:Q", format=".2f", title="Katkı (λ)")]
                 )
-                .properties(height=220)
+                .properties(height=160)
             )
             
             # İsteğe bağlı: üstüne değer etiketi
@@ -854,7 +891,7 @@ with col2:
 
     st.subheader("En riskli bölgeler")
     if st.session_state["agg"] is not None:
-        st.dataframe(top_risky_table(st.session_state["agg"]))
+        st.dataframe(top_risky_table(st.session_state["agg"]), use_container_width=True, height=300)
 
     st.subheader("Devriye özeti")
     if st.session_state.get("agg") is not None and btn_patrol:
@@ -876,7 +913,7 @@ with col2:
             "utilization_%": z["utilization_pct"],
             "avg_risk(E[olay])": round(z["expected_risk"], 2),
         } for z in patrol["zones"]]
-        st.dataframe(pd.DataFrame(rows))
+        st.dataframe(pd.DataFrame(rows), use_container_width=True, height=260)
 
     st.subheader("Dışa aktar")
     if st.session_state["agg"] is not None:
