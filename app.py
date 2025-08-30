@@ -159,6 +159,50 @@ def _extract_latlon_from_ret(ret) -> Tuple[float, float] | None:
             return float(ll["lat"]), float(ll.get("lng", ll.get("lon")))
     return None
 
+def resolve_clicked_gid(ret: dict) -> tuple[str | None, tuple[float, float] | None]:
+    """st_folium dönüşünden güvenli şekilde (gid, latlon) çıkarır."""
+    gid, latlon = None, None
+    obj = ret.get("last_object_clicked") if isinstance(ret, dict) else None
+
+    # 1) GeoJSON / Feature -> id alanları
+    if isinstance(obj, dict):
+        props = obj.get("properties", {}) or obj.get("feature", {}).get("properties", {}) or {}
+        gid = str(
+            obj.get("id")
+            or props.get("id")
+            or props.get(KEY_COL)
+            or props.get("GEOID")
+            or ""
+        ).strip() or None
+
+        # 2) Nesneden koordinat yakalamaya çalış (Point, CircleMarker vb.)
+        if not latlon:
+            # GeoJSON Point
+            geom = obj.get("geometry") or obj.get("feature", {}).get("geometry")
+            if isinstance(geom, dict) and geom.get("type") == "Point":
+                coords = geom.get("coordinates", [])
+                if isinstance(coords, (list, tuple)) and len(coords) >= 2:
+                    latlon = (float(coords[1]), float(coords[0]))
+            # Bazı katmanlar lat/lng saklar
+            if not latlon:
+                lat = obj.get("lat") or obj.get("latlng", {}).get("lat") or obj.get("location", {}).get("lat")
+                lng = obj.get("lng") or obj.get("latlng", {}).get("lng") or obj.get("location", {}).get("lng") or obj.get("lon")
+                if lat is not None and lng is not None:
+                    latlon = (float(lat), float(lng))
+
+    # 3) Haritaya tık (poligon yerine zemin): last_clicked
+    if not gid:
+        if not latlon:
+            lc = ret.get("last_clicked") if isinstance(ret, dict) else None
+            if isinstance(lc, (list, tuple)) and len(lc) >= 2:
+                latlon = (float(lc[0]), float(lc[1]))
+            elif isinstance(lc, dict) and "lat" in lc and ("lng" in lc or "lon" in lc):
+                latlon = (float(lc["lat"]), float(lc.get("lng", lc.get("lon"))))
+        if latlon:
+            gid = nearest_geoid(latlon[0], latlon[1])
+
+    return gid, latlon
+
 def local_explain(df_agg: pd.DataFrame, geoid: str, start_iso: str, horizon_h: int) -> Dict:
     # Hücre satırı
     row = df_agg.loc[df_agg[KEY_COL] == geoid]
@@ -630,7 +674,7 @@ def build_map(
             tooltip=folium.Tooltip(f"{gid} — E[olay]: {expected:.2f} — {tier}"),
         )
         # Popup: sadece Yüksek/Orta için ekle (istersen 'or True' yapıp hepsine aç)
-        if show_popups and tier != "Hafif":
+        if show_popups: 
             folium.Popup(popup_html, max_width=280).add_to(geo)
         geo.add_to(m)
 
@@ -649,6 +693,7 @@ def build_map(
                 fill=True,
                 fill_color="#ff0000",
                 popup=folium.Popup("ACİL — üst %1 E[olay]", max_width=150),
+                interactive=False,
             ).add_to(m)
 
     # Devriye rotaları
@@ -847,10 +892,15 @@ if sekme == "Operasyon":
             )
             ret = st_folium(
                 m,
+                key="riskmap",   # Stabil anahtar EKLE
                 width=None,
                 height=540,
-                returned_objects=["last_active_drawing", "last_object_clicked", "last_clicked"]
+                returned_objects=["last_object_clicked", "last_clicked"]
             )
+            
+            clicked_gid = None
+            if ret:
+                clicked_gid, _ = resolve_clicked_gid(ret)
                 
             clicked_gid = None
             if ret:
@@ -887,6 +937,15 @@ if sekme == "Operasyon":
                     "geoid": clicked_gid,
                     "data": local_explain(agg, clicked_gid, start_iso, horizon_h),
                 }
+
+            with st.expander("Hızlı inceleme"):
+                top_ids = top_risky_table(agg, n=20)[KEY_COL].astype(str).tolist()
+                pick = st.selectbox("Bölge seç (alternatif):", ["—"] + top_ids, index=0, key="pick_alt")
+                if pick != "—":
+                    st.session_state["explain"] = {
+                        "geoid": pick,
+                        "data": local_explain(agg, pick, start_iso, horizon_h),
+                    }
         
             # --- SOLA (haritanın ALTINA) AÇIKLAMA PANELİ ---
             st.markdown("### Açıklama (seçili hücre)")
