@@ -160,6 +160,54 @@ def local_explain(df_agg: pd.DataFrame, geoid: str, start_iso: str, horizon_h: i
         "top_types": top_types,
     }
 
+def _fmt_hhmm(dt: datetime) -> str:
+    return dt.strftime("%H:%M")
+
+def risk_window_text(start_iso: str, horizon_h: int) -> str:
+    start = datetime.fromisoformat(start_iso)
+    hours = np.arange(horizon_h)
+    diurnal = 1.0 + 0.4 * np.sin((((start.hour + hours) % 24 - 18) / 24) * 2 * np.pi)
+    if diurnal.size == 0:
+        return f"{_fmt_hhmm(start)}–{_fmt_hhmm(start)}"
+    thr = np.quantile(diurnal, 0.75)
+    hot = np.where(diurnal >= thr)[0]
+    if len(hot) == 0:
+        t2 = start + timedelta(hours=horizon_h)
+        return f"{_fmt_hhmm(start)}–{_fmt_hhmm(t2)}"
+    # en uzun ardışık dilimi seç
+    splits = np.split(hot, np.where(np.diff(hot) != 1)[0] + 1)
+    seg = max(splits, key=len)
+    t1 = start + timedelta(hours=int(seg[0]))
+    t2 = start + timedelta(hours=int(seg[-1]) + 1)
+    t_peak = start + timedelta(hours=int(seg[len(seg)//2]))
+    return f"{_fmt_hhmm(t1)}–{_fmt_hhmm(t2)} (tepe ≈ {_fmt_hhmm(t_peak)})"
+
+def confidence_label(q10: float, q90: float) -> str:
+    width = q90 - q10
+    if width < 0.18: return "yüksek"
+    if width < 0.30: return "orta"
+    return "düşük"
+
+CUE_MAP = {
+    "assault":   ["bar/eğlence çıkışları", "meydan/park gözetimi"],
+    "robbery":   ["metro/otobüs durağı & ATM çevresi", "dar sokak giriş-çıkışları"],
+    "theft":     ["otopark/araç park alanları", "bagaj/bisiklet kilit kontrolü"],
+    "burglary":  ["arka sokaklar & yükleme kapıları", "kapanış sonrası işyerleri"],
+    "vandalism": ["okul/park/altgeçit çevresi", "inşaat sahası kontrolü"],
+}
+
+def actionable_cues(top_types: list[tuple[str, float]], max_items: int = 3) -> list[str]:
+    tips: list[str] = []
+    for crime, _ in top_types[:2]:
+        tips.extend(CUE_MAP.get(crime, [])[:2])
+    # yinelenenleri at, ilk max_items’i al
+    seen, out = set(), []
+    for t in tips:
+        if t not in seen:
+            seen.add(t); out.append(t)
+        if len(out) >= max_items: break
+    return out
+
 # --------- HIZLI AGGREGATION BLOĞU (EKLE: GEO_DF satırının hemen altına) ---------
 @st.cache_data(show_spinner=False)
 def precompute_base_intensity(geo_df: pd.DataFrame) -> np.ndarray:
@@ -719,13 +767,44 @@ with col1:
             c2.metric("E[olay] (λ)", f"{ex['expected']:.2f}")
             c3.metric("Öncelik", ex["tier"])
     
+            # 1) Öne çıkan suçlar
+            top_txt = ", ".join([f"{t} ({v:.2f}λ)" for t, v in ex["top_types"]])
             st.caption("En olası 3 suç")
-            st.write(", ".join([f"{t} ({v:.2f})" for t, v in ex["top_types"]]))
-    
+            st.write(top_txt)
+            
+            # 2) Saha özeti (kolluk gözüyle)
+            win_text = risk_window_text(start_iso, horizon_h)
+            conf_txt = confidence_label(ex["q10"], ex["q90"])
+            total = sum(ex["contribs"].values()) or 1.0
+            drivers = ", ".join([f"{k} %{round(100*v/total)}" for k, v in ex["contribs"].items()])
+            tips = actionable_cues(ex["top_types"])
+            
+            st.markdown("#### Saha özeti")
+            st.markdown(
+                f"- **Risk penceresi:** {win_text}\n"
+                f"- **Sürücüler:** {drivers}\n"
+                f"- **Güven:** {conf_txt} (q10={ex['q10']:.2f}, q90={ex['q90']:.2f})\n"
+                f"- **Eylem önerileri:**"
+            )
+            for t in tips:
+                st.markdown(f"  - {t}")
+            
+            # 3) (İsterseniz) kısa çubuk grafik: katkılar
             contrib_df = pd.DataFrame({"katkı (λ)": ex["contribs"]}).sort_values("katkı (λ)")
             st.bar_chart(contrib_df)
-    
-            st.caption(f"Belirsizlik bandı: q10={ex['q10']:.2f} • q90={ex['q90']:.2f}")
+            
+            # 4) Radyo anonsu – kopyalanabilir tek cümle
+            lead1 = ex["top_types"][0][0] if ex["top_types"] else "-"
+            lead2 = ex["top_types"][1][0] if len(ex["top_types"]) > 1 else "-"
+            first_tip = tips[0] if tips else "-"
+            st.caption("Radyo anonsu")
+            st.code(
+                f"{geoid}: {win_text} aralığında risk **{ex['tier'].lower()}**. "
+                f"Öncelik: {lead1}, {lead2}. E[olay]={ex['expected']:.1f} (güven {conf_txt}). "
+                f"Ekip odak: {first_tip}.",
+                language=None
+            )
+
         else:
             st.info("Haritada bir hücreye tıklarsanız açıklama burada görünecek.")
     else:
