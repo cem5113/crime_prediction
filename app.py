@@ -135,9 +135,11 @@ def hourly_forecast(start: datetime, horizon_h: int, scenario: Dict) -> pd.DataF
 def daily_forecast(start: datetime, days: int, scenario: Dict) -> pd.DataFrame:
     hourly = hourly_forecast(start, days * 24, scenario)
     hourly["date"] = hourly["ts"].str.slice(0, 10)
-    daily = hourly.groupby([KEY_COL, "date"]).agg({"p_any":"mean","q10":"mean","q90":"mean", **{t:"mean" for t in CRIME_TYPES}}).reset_index()-
+    agg_map = {"p_any": "mean", "q10": "mean", "q90": "mean"}
+    agg_map.update({t: "mean" for t in CRIME_TYPES})
+    daily = hourly.groupby([KEY_COL, "date"], as_index=False).agg(agg_map)
     return daily
-
+    
 @st.cache_data(show_spinner=False)
 def hourly_forecast_cached(start_iso: str, horizon_h: int, scenario: Dict) -> pd.DataFrame:
     start = datetime.fromisoformat(start_iso)
@@ -149,8 +151,10 @@ def daily_forecast_cached(start_iso: str, days: int, scenario: Dict) -> pd.DataF
     return daily_forecast(start, days, scenario)
 
 def aggregate_for_view(df: pd.DataFrame) -> pd.DataFrame:
-    return df.groupby(KEY_COL).agg({"p_any":"mean","q10":"mean","q90":"mean", **{t:"mean" for t in CRIME_TYPES}}).reset_index()
-
+    agg_map = {"p_any": "mean", "q10": "mean", "q90": "mean"}
+    agg_map.update({t: "mean" for t in CRIME_TYPES})
+    return df.groupby(KEY_COL, as_index=False).agg(agg_map)
+    
 def top_risky_table(df_agg: pd.DataFrame, n: int = 12) -> pd.DataFrame:
     cols = [KEY_COL, "p_any"] + CRIME_TYPES
     tab = df_agg[cols].sort_values("p_any", ascending=False).head(n).reset_index(drop=True)
