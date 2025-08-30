@@ -21,14 +21,10 @@ st.title("SUTAM: Suç Tahmin Modeli")
 # =============================
 # SABİTLER
 # =============================
-SF_TZ_OFFSET = -7  # PDT kabaca; prod'da pytz kullanın
-LON_MIN, LON_MAX = -122.52, -122.36
-LAT_MIN, LAT_MAX = 37.70, 37.82
-GRID_STEPS = 14
+SF_TZ_OFFSET = -7  # PDT kabaca; prod'da pytz/pytzdata kullanın
 CRIME_TYPES = ["assault", "burglary", "theft", "robbery", "vandalism"]
-RISK_BANDS = {"Yüksek": (0.90, 1.00), "Orta": (0.70, 0.90), "Hafif": (0.50, 0.70)}
 KEY_COL = "geoid"
-CACHE_VERSION = "geo-v1"
+CACHE_VERSION = "v2-geo-poisson"
 
 rng = np.random.default_rng(42)
 
@@ -38,11 +34,6 @@ rng = np.random.default_rng(42)
 
 def now_sf_iso() -> str:
     return (datetime.utcnow() + timedelta(hours=SF_TZ_OFFSET)).isoformat(timespec="seconds")
-
-
-def linspace(a: float, b: float, n: int) -> List[float]:
-    return [a + (b - a) * i / n for i in range(n + 1)]
-
 
 def polygon_centroid(lonlat_loop):
     # lonlat_loop: [[lon,lat], ..., ilk noktaya kapanan halka]
@@ -62,7 +53,7 @@ def load_geoid_layer(path="data/sf_cells.geojson", key_field=KEY_COL):
     p = Path(path)
     if not p.exists():
         st.error(f"GEOJSON bulunamadı: {path}")
-        return pd.DataFrame(columns=[key_field,"centroid_lon","centroid_lat"]), []
+        return pd.DataFrame(columns=[key_field, "centroid_lon", "centroid_lat"]), []
     gj = json.loads(p.read_text(encoding="utf-8"))
     rows, feats_out = [], []
     for feat in gj.get("features", []):
@@ -93,8 +84,8 @@ GEO_DF, GEO_FEATURES = load_geoid_layer_cached("data/sf_cells.geojson", key_fiel
 if GEO_DF.empty:
     st.error("GEOJSON yüklendi ama satır gelmedi. 'data/sf_cells.geojson' içinde 'properties.geoid' eksik olabilir.")
 
+# --- Sentetik yoğunluk (sadece prototip) ---
 def scenario_multipliers(_scenario: Dict) -> float:
-    # Gerçek hava/etkinlik verisi pipeline’dan geldiği için kullanıcı senaryosu yok
     return 1.0
 
 def base_spatial_intensity(lon: float, lat: float) -> float:
@@ -102,7 +93,6 @@ def base_spatial_intensity(lon: float, lat: float) -> float:
     peak2 = math.exp(-(((lon + 122.42) ** 2) / 0.0006 + ((lat - 37.76) ** 2) / 0.0006))
     noise = 0.1 * rng.random()
     return 0.2 + 0.8 * (peak1 + peak2) + noise
-
 
 def hourly_forecast(start: datetime, horizon_h: int, scenario: Dict) -> pd.DataFrame:
     mult = scenario_multipliers(scenario)
@@ -125,15 +115,13 @@ def hourly_forecast(start: datetime, horizon_h: int, scenario: Dict) -> pd.DataF
                          "p_any": p_any, "q10": q10, "q90": q90, **types})
     return pd.DataFrame(recs)
 
-
 def daily_forecast(start: datetime, days: int, scenario: Dict) -> pd.DataFrame:
     hourly = hourly_forecast(start, days * 24, scenario)
     hourly["date"] = hourly["ts"].str.slice(0, 10)
-    agg_map = {"p_any": "mean", "q10": "mean", "q90": "mean"}
-    agg_map.update({t: "mean" for t in CRIME_TYPES})
+    agg_map = {"p_any": "mean", "q10": "mean", "q90": "mean"} | {t: "mean" for t in CRIME_TYPES}
     daily = hourly.groupby([KEY_COL, "date"], as_index=False).agg(agg_map)
     return daily
-    
+
 @st.cache_data(show_spinner=False)
 def hourly_forecast_cached(start_iso: str, horizon_h: int, scenario: Dict, _v=CACHE_VERSION):
     start = datetime.fromisoformat(start_iso)
@@ -144,51 +132,7 @@ def daily_forecast_cached(start_iso: str, days: int, scenario: Dict, _v=CACHE_VE
     start = datetime.fromisoformat(start_iso)
     return daily_forecast(start, days, scenario)
 
-def aggregate_for_view(df: pd.DataFrame) -> pd.DataFrame:
-    df = df.copy()
-    # her saat için lambda (beklenen olay sayısı)
-    df["lam"] = p_to_lambda(df["p_any"])
-
-    # saatlik belirsizliği ortalama tutalım (popup için)
-    mean_map = {"q10": "mean", "q90": "mean"}
-
-    # ufuk boyunca beklenen toplam (λ toplama kuralıyla)
-    sum_map = {"lam": "sum"} | {t: "sum" for t in CRIME_TYPES}
-
-    mean_part = df.groupby(KEY_COL, as_index=False).agg(mean_map)
-    sum_part  = df.groupby(KEY_COL, as_index=False).agg(sum_map)
-
-    out = mean_part.merge(sum_part, on=KEY_COL)
-    out = out.rename(columns={"lam": "expected"})  # beklenen olay sayısı (λ)
-
-    # Öncelik sınıfları: expected üzerinden quantile
-    q90 = out["expected"].quantile(0.90)
-    q70 = out["expected"].quantile(0.70)
-    out["tier"] = np.select(
-        [out["expected"] >= q90, out["expected"] >= q70],
-        ["Yüksek", "Orta"],
-        default="Hafif",
-    )
-    return out
-    
-def top_risky_table(df_agg: pd.DataFrame, n: int = 12) -> pd.DataFrame:
-    tab = df_agg[[KEY_COL, "expected"] + CRIME_TYPES].sort_values(
-        "expected", ascending=False
-    ).head(n).reset_index(drop=True)
-
-    # Poisson’tan olasılıklar (λ = expected)
-    lam = tab["expected"].to_numpy()
-    tab["P(≥1)%"] = [round(prob_ge_k(l, 1) * 100, 1) for l in lam]
-    tab["P(≥2)%"] = [round(prob_ge_k(l, 2) * 100, 1) for l in lam]
-    tab["P(≥3)%"] = [round(prob_ge_k(l, 3) * 100, 1) for l in lam]
-
-    tab["expected"] = tab["expected"].round(2)
-    for t in CRIME_TYPES:
-        tab[t] = tab[t].round(3)
-
-    return tab.rename(columns={"expected": "E[olay] (λ)"})
-
-# --- Poisson yardımcıları (p_any -> lambda ve olasılıklar) ---
+# --- Poisson yardımcıları ---
 def p_to_lambda(p: pd.Series | np.ndarray) -> np.ndarray:
     # p_any = 1 - e^{-λ}  =>  λ = -ln(1 - p)
     p = np.clip(np.asarray(p, dtype=float), 0.0, 0.999999)
@@ -204,22 +148,46 @@ def prob_ge_k(lam: float, k: int) -> float:
     # P(N >= k) = 1 - CDF(k-1; λ)
     return 1.0 - pois_cdf(k - 1, lam)
 
-def percentile_threshold(series: pd.Series, p: float) -> float:
-    return float(np.quantile(series.to_numpy(), p))
+# --- Görünüm için agregasyon ---
+def aggregate_for_view(df: pd.DataFrame) -> pd.DataFrame:
+    df = df.copy()
+    # saatlik/periodik p_any → λ
+    df["lam"] = p_to_lambda(df["p_any"])
 
-def choose_candidates(df_agg: pd.DataFrame, bands: List[str]) -> pd.DataFrame:
-    # bands = ["Yüksek", "Orta"] vs; percentiller RISK_BANDS sözlüğünden
-    lo, hi = 1.0, 0.0
-    for b in bands:
-        bl, bh = RISK_BANDS[b]
-        lo = min(lo, bl)
-        hi = max(hi, bh)
-    # Percentiller expected üzerinden
-    thr_lo = np.quantile(df_agg["expected"].to_numpy(), lo)
-    thr_hi = np.quantile(df_agg["expected"].to_numpy(), hi)
-    cand = df_agg[(df_agg["expected"] >= thr_lo) & (df_agg["expected"] <= thr_hi)].copy()
-    return cand.sort_values("expected", ascending=False)
+    # saatlik belirsizliklerin ortalaması (popup için)
+    mean_part = df.groupby(KEY_COL, as_index=False).agg({"q10": "mean", "q90": "mean"})
+    # ufuk boyunca beklenen toplam olay (λ toplamı)
+    sum_part  = df.groupby(KEY_COL, as_index=False).agg({"lam": "sum"} | {t: "sum" for t in CRIME_TYPES})
 
+    out = mean_part.merge(sum_part, on=KEY_COL).rename(columns={"lam": "expected"})
+
+    # Öncelik sınıfları (quantile) – expected üzerinden
+    q90 = out["expected"].quantile(0.90)
+    q70 = out["expected"].quantile(0.70)
+    out["tier"] = np.select(
+        [out["expected"] >= q90, out["expected"] >= q70],
+        ["Yüksek", "Orta"],
+        default="Hafif",
+    )
+    return out
+
+def top_risky_table(df_agg: pd.DataFrame, n: int = 12) -> pd.DataFrame:
+    tab = df_agg[[KEY_COL, "expected"] + CRIME_TYPES].sort_values(
+        "expected", ascending=False
+    ).head(n).reset_index(drop=True)
+
+    lam = tab["expected"].to_numpy()
+    tab["P(≥1)%"] = [round(prob_ge_k(l, 1) * 100, 1) for l in lam]
+    tab["P(≥2)%"] = [round(prob_ge_k(l, 2) * 100, 1) for l in lam]
+    tab["P(≥3)%"] = [round(prob_ge_k(l, 3) * 100, 1) for l in lam]
+
+    tab["expected"] = tab["expected"].round(2)
+    for t in CRIME_TYPES:
+        tab[t] = tab[t].round(3)
+
+    return tab.rename(columns={"expected": "E[olay] (λ)"})
+
+# --- Devriye kümeleme ---
 def kmeans_like(coords: np.ndarray, weights: np.ndarray, k: int, iters: int = 20):
     n = len(coords)
     k = min(k, n)
@@ -238,14 +206,17 @@ def kmeans_like(coords: np.ndarray, weights: np.ndarray, k: int, iters: int = 20
                 centroids[c] = (coords[m] * w).sum(axis=0) / max(1e-6, w.sum())
     return centroids, assign
 
-def allocate_patrols(df_agg: pd.DataFrame, bands: List[str]) -> Dict:
+def allocate_patrols(df_agg: pd.DataFrame) -> Dict:
     """
-    K'yi kullanıcıdan almak yerine otomatik seçer.
+    K'yi otomatik seçer; adaylar = Yüksek + Orta hücreler.
     Heuristik: k ≈ ceil(sqrt(n/2)), 1..20 aralığına sıkıştırılır.
     """
-    cand = choose_candidates(df_agg, bands)
+    cand = df_agg[df_agg["tier"].isin(["Yüksek", "Orta"])].copy()
     if cand.empty:
         return {"zones": []}
+
+    # İhtiyaten çok kalabalık kümeyi kırpmak istersen:
+    cand = cand.sort_values("expected", ascending=False).head(100).copy()
 
     merged  = cand.merge(GEO_DF, on=KEY_COL)
     coords  = merged[["centroid_lon", "centroid_lat"]].to_numpy()
@@ -278,13 +249,6 @@ def allocate_patrols(df_agg: pd.DataFrame, bands: List[str]) -> Dict:
 
 def color_for_tier(tier: str) -> str:
     return {"Yüksek": "#d62728", "Orta": "#ff7f0e", "Hafif": "#1f77b4"}.get(tier, "#1f77b4")
-
-def color_for_percentile(p: float) -> str:
-    if p >= 0.9: return "#b30000"
-    if p >= 0.7: return "#ff7f00"
-    if p >= 0.5: return "#ffff33"
-    if p >= 0.3: return "#a1d99b"
-    return "#c7e9c0"
 
 def build_map(df_agg: pd.DataFrame, patrol: Dict | None = None) -> folium.Map:
     # Boş/eksik durumda güvenli çık
@@ -359,34 +323,32 @@ def build_map(df_agg: pd.DataFrame, patrol: Dict | None = None) -> folium.Map:
             ).add_to(m)
 
     return m
-    
-def _mark_auto_patrol():
-    st.session_state["auto_patrol"] = True
-    
+
 # =============================
 # UI — SİDEBAR
 # =============================
 st.sidebar.header("Ayarlar")
 ufuk = st.sidebar.radio("Ufuk", options=["24s", "48s", "7g"], index=0, horizontal=True)
 
-# yeni: kullanıcı "şu andan + X saat sonra başlat"
-start_offset = st.sidebar.slider("Başlangıç (şimdiden + saat)", 0, 72, 0)
+# Aralık seçimi (başlangıç-bitiş)
+if ufuk == "24s":
+    max_h, step = 24, 1
+elif ufuk == "48s":
+    max_h, step = 48, 3
+else:
+    max_h, step = 7 * 24, 24
 
-st.sidebar.header("Devriye Tahsisi")
-bands = st.sidebar.multiselect(
-    "Kapsanacak risk bandları (devriye için)",
-    list(RISK_BANDS.keys()),
-    default=["Yüksek", "Orta"],
-    key="bands_select"
+start_h, end_h = st.sidebar.slider(
+    "Zaman aralığı (şimdiden + saat)",
+    min_value=0, max_value=max_h, value=(0, max_h), step=step
 )
 
+# Devriye butonu (K/band yok)
 colA, colB = st.sidebar.columns(2)
 btn_predict = colA.button("Tahmin et")
 btn_patrol  = colB.button("Devriye öner", disabled=st.session_state.get("agg") is None)
 
-st.sidebar.caption("• Tahmin et: risk haritasını günceller.  • Devriye öner: seçili bandlardaki bölgelerden otomatik küme ve rota üretir.")
-
-st.sidebar.caption("• Tahmin et: risk haritasını günceller.  • Devriye öner: K kümeye bölüp rotaları çıkarır.")
+st.sidebar.caption("• Tahmin et: seçtiğin aralık için riskleri hesaplar.  • Devriye öner: Yüksek+Orta hücrelerden otomatik küme/rota üretir.")
 
 # =============================
 # STATE
@@ -395,7 +357,6 @@ if "forecast" not in st.session_state:
     st.session_state["forecast"] = None
     st.session_state["agg"] = None
     st.session_state["patrol"] = None
-    st.session_state["auto_patrol"] = False  
 
 # =============================
 # ANA BÖLÜM
@@ -405,24 +366,25 @@ col1, col2 = st.columns([2.4, 1.0])
 with col1:
     st.caption(f"Son güncelleme (SF): {now_sf_iso()}")
     if btn_predict or st.session_state["agg"] is None:
-        start = (
+        start_dt = (
             datetime.utcnow()
-            + timedelta(hours=SF_TZ_OFFSET)    
-            + timedelta(hours=start_offset)      
+            + timedelta(hours=SF_TZ_OFFSET + start_h)
         ).replace(minute=0, second=0, microsecond=0)
+        horizon_h = max(1, end_h - start_h)
         scenario = {}
-        
+
         if ufuk in ("24s", "48s"):
-            horizon = 24 if ufuk == "24s" else 48
-            df = hourly_forecast_cached(start.isoformat(), horizon, scenario)
+            df = hourly_forecast_cached(start_dt.isoformat(), horizon_h, scenario)
         else:
-            df = daily_forecast_cached(start.isoformat(), 7, scenario)
+            days = int(math.ceil(horizon_h / 24))
+            df = daily_forecast_cached(start_dt.isoformat(), days, scenario)
+
         agg = aggregate_for_view(df)
         st.session_state["forecast"] = df
         st.session_state["agg"] = agg
         st.session_state["patrol"] = None
-    agg = st.session_state["agg"]
 
+    agg = st.session_state["agg"]
     if agg is not None:
         m = build_map(agg, st.session_state["patrol"])
         st_folium(m, width=None, height=620)
@@ -440,35 +402,30 @@ with col2:
         c2.metric("Yüksek öncelik", high)
         c3.metric("Öncelik", mid)
         c4.metric("Düşük", low)
-    
-        with st.expander("Öncelik kümeleri – geoid listeleri"):
+
+        with st.expander("Öncelik kümeleri — geoid listeleri"):
             cc1, cc2, cc3 = st.columns(3)
             cc1.write(", ".join(a.loc[a["tier"]=="Yüksek", KEY_COL].astype(str).tolist()) or "—")
             cc2.write(", ".join(a.loc[a["tier"]=="Orta",   KEY_COL].astype(str).tolist()) or "—")
             cc3.write(", ".join(a.loc[a["tier"]=="Hafif",  KEY_COL].astype(str).tolist()) or "—")
-    
+
     st.subheader("En riskli bölgeler")
-    st.dataframe(top_risky_table(st.session_state["agg"]))
     if st.session_state["agg"] is not None:
         st.dataframe(top_risky_table(st.session_state["agg"]))
-    
+
     st.subheader("Devriye özeti")
-    
-    # Butona basınca veya K/bands değişince yeniden öner
-    if st.session_state.get("agg") is not None and (btn_patrol or st.session_state.get("auto_patrol", False)):
-        st.session_state["patrol"] = allocate_patrols(
-            st.session_state["agg"], bands or list(RISK_BANDS.keys())
-        )
-        # bir kez çalışsın, bayrağı sıfırla
-        st.session_state["auto_patrol"] = False
-    
+    if st.session_state.get("agg") is not None and btn_patrol:
+        st.session_state["patrol"] = allocate_patrols(st.session_state["agg"])
+
     patrol = st.session_state.get("patrol")
     if patrol:
         rows = [{"zone": z["id"], "cells": len(z["cells"]),
-                 "avg_risk": round(z["expected_risk"], 3)} for z in patrol.get("zones", [])]
+                 "avg_risk(E[olay])": round(z["expected_risk"], 2)} for z in patrol.get("zones", [])]
         st.dataframe(pd.DataFrame(rows))
 
     st.subheader("Dışa aktar")
     if st.session_state["agg"] is not None:
         csv = st.session_state["agg"].to_csv(index=False).encode("utf-8")
-        st.download_button("CSV indir", data=csv, file_name=f"risk_export_{int(time.time())}.csv", mime="text/csv")
+        st.download_button("CSV indir", data=csv,
+                           file_name=f"risk_export_{int(time.time())}.csv",
+                           mime="text/csv")
