@@ -1,8 +1,7 @@
 from __future__ import annotations
 import math
 import time
-from __future__ import annotations
-import math
+
 import io, base64, requests
 from datetime import datetime, timedelta
 from typing import Dict, List, Tuple
