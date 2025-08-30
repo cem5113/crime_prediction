@@ -248,58 +248,76 @@ def color_for_percentile(p: float) -> str:
     if p >= 0.3: return "#a1d99b"
     return "#c7e9c0"
 
-
 def build_map(df_agg: pd.DataFrame, patrol: Dict | None = None) -> folium.Map:
+    # Boş/eksik durumda güvenli çık
     m = folium.Map(location=[37.7749, -122.4194], zoom_start=12, tiles="cartodbpositron")
-    if KEY_COL not in df_agg.columns:
-        st.warning(f"Harita için '{KEY_COL}' kolonu bulunamadı. Lütfen 'Tahmin et' butonuna basın.")
-        return folium.Map(location=[37.7749, -122.4194], zoom_start=12, tiles="cartodbpositron")
+    if df_agg is None or df_agg.empty or KEY_COL not in df_agg.columns:
+        return m
+
+    # Boyama ve "acil" eşiği expected üzerinden
     values = df_agg["expected"].to_numpy()
+
     for feat in GEO_FEATURES:
         gid = feat["properties"]["id"]  # = geoid
-        row = df_agg[df_agg[KEY_COL] == gid]
-        expected = float(row["expected"].iloc[0])
-        tier = row["tier"].iloc[0]
+        row = df_agg.loc[df_agg[KEY_COL] == gid]
         if row.empty:
             continue
-        p  = float(row["p_any"].iloc[0])
-        q10 = float(row["q10"].iloc[0]); q90 = float(row["q90"].iloc[0])
-        types = {t: float(row[t].iloc[0]) for t in CRIME_TYPES}
+
+        expected = float(row["expected"].iloc[0])
+        tier      = str(row["tier"].iloc[0])
+        q10       = float(row["q10"].iloc[0])
+        q90       = float(row["q90"].iloc[0])
+        types     = {t: float(row[t].iloc[0]) for t in CRIME_TYPES}
+
         top3 = sorted(types.items(), key=lambda x: x[1], reverse=True)[:3]
         top_html = "".join([f"<li>{t}: {v:.2f}</li>" for t, v in top3])
+
         popup_html = f"""
         <b>{gid}</b><br/>
-        E[olay] (ufuk): {expected:.2f}<br/>
+        E[olay] (ufuk): {expected:.2f} &nbsp;•&nbsp; Öncelik: <b>{tier}</b><br/>
         <b>En olası 3 tip</b>
         <ul style='margin-left:12px'>{top_html}</ul>
         <i>Belirsizlik (saatlik ort.): q10={q10:.2f}, q90={q90:.2f}</i>
         """
+
         style = {
             "fillColor": color_for_tier(tier),
             "color": "#666666",
             "weight": 0.5,
             "fillOpacity": 0.6,
         }
-        folium.GeoJson(data=feat,
-                       style_function=lambda _x, s=style: s,
-                       tooltip=folium.Tooltip(f"{gid} — risk {p:.2f}"),
-                       popup=folium.Popup(popup_html, max_width=280)
-                       ).add_to(m)
-    
+
+        folium.GeoJson(
+            data=feat,
+            style_function=lambda _x, s=style: s,
+            tooltip=folium.Tooltip(f"{gid} — E[olay]: {expected:.2f} — {tier}"),
+            popup=folium.Popup(popup_html, max_width=280),
+        ).add_to(m)
+
+    # En yüksek %1 beklenen olaya kırmızı uyarı
     thr99 = np.quantile(values, 0.99)
     urgent = df_agg[df_agg["expected"] >= thr99]
     for _, r in urgent.iterrows():
         lat = GEO_DF.loc[GEO_DF[KEY_COL] == r[KEY_COL], "centroid_lat"].values[0]
         lon = GEO_DF.loc[GEO_DF[KEY_COL] == r[KEY_COL], "centroid_lon"].values[0]
-        folium.CircleMarker(location=[lat, lon], radius=6, color="#000",
-                            fill=True, fill_color="#ff0000",
-                            popup=folium.Popup("ACİL — üst %1 risk", max_width=150)
-                            ).add_to(m)
+        folium.CircleMarker(
+            location=[lat, lon],
+            radius=6,
+            color="#000",
+            fill=True,
+            fill_color="#ff0000",
+            popup=folium.Popup("ACİL — üst %1 E[olay]", max_width=150),
+        ).add_to(m)
 
+    # Devriye rotaları
     if patrol and patrol.get("zones"):
         for z in patrol["zones"]:
             folium.PolyLine(z["route"], tooltip=f"{z['id']} rota").add_to(m)
-            folium.Marker([z["centroid"]["lat"], z["centroid"]["lon"]], icon=folium.DivIcon(html=f"<div style='background:#111;color:#fff;padding:2px 6px;border-radius:6px'> {z['id']} </div>")).add_to(m)
+            folium.Marker(
+                [z["centroid"]["lat"], z["centroid"]["lon"]],
+                icon=folium.DivIcon(html="<div style='background:#111;color:#fff;padding:2px 6px;border-radius:6px'> "
+                                         f"{z['id']} </div>")
+            ).add_to(m)
     return m
     
 def _mark_auto_patrol():
