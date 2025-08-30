@@ -9,6 +9,8 @@ import pandas as pd
 import streamlit as st
 import folium
 from streamlit_folium import st_folium
+import json
+from pathlib import Path
 
 # =============================
 # SAYFA AYARLARI
@@ -25,6 +27,7 @@ LAT_MIN, LAT_MAX = 37.70, 37.82
 GRID_STEPS = 14
 CRIME_TYPES = ["assault", "burglary", "theft", "robbery", "vandalism"]
 RISK_BANDS = {"Yüksek": (0.90, 1.00), "Orta": (0.70, 0.90), "Hafif": (0.50, 0.70)}
+KEY_COL = "geoid"
 
 rng = np.random.default_rng(42)
 
@@ -40,34 +43,52 @@ def linspace(a: float, b: float, n: int) -> List[float]:
     return [a + (b - a) * i / n for i in range(n + 1)]
 
 
-def build_grid() -> Tuple[pd.DataFrame, List[Dict]]:
-    lons = linspace(LON_MIN, LON_MAX, GRID_STEPS)
-    lats = linspace(LAT_MIN, LAT_MAX, GRID_STEPS)
-    features, rows = [], []
-    idx = 0
-    for i in range(GRID_STEPS):
-        for j in range(GRID_STEPS):
-            lon0, lon1 = lons[i], lons[i + 1]
-            lat0, lat1 = lats[j], lats[j + 1]
-            cell_id = f"cell_{idx:03d}"
-            centroid_lon = (lon0 + lon1) / 2
-            centroid_lat = (lat0 + lat1) / 2
-            poly = [[lon0, lat0], [lon1, lat0], [lon1, lat1], [lon0, lat1], [lon0, lat0]]
-            feat = {
-                "type": "Feature",
-                "geometry": {"type": "Polygon", "coordinates": [poly]},
-                "properties": {"id": cell_id, "i": i, "j": j, "centroid_lon": centroid_lon, "centroid_lat": centroid_lat},
-            }
-            features.append(feat)
-            rows.append({"cell_id": cell_id, "i": i, "j": j, "centroid_lon": centroid_lon, "centroid_lat": centroid_lat})
-            idx += 1
-    return pd.DataFrame(rows), features
+def polygon_centroid(lonlat_loop):
+    # lonlat_loop: [[lon,lat], ..., ilk noktaya kapanan halka]
+    x, y = zip(*lonlat_loop)
+    A = Cx = Cy = 0.0
+    for i in range(len(lonlat_loop) - 1):
+        cross = x[i]*y[i+1] - x[i+1]*y[i]
+        A  += cross
+        Cx += (x[i] + x[i+1]) * cross
+        Cy += (y[i] + y[i+1]) * cross
+    A *= 0.5
+    if abs(A) < 1e-12:
+        return float(sum(x)/len(x)), float(sum(y)/len(y))
+    return float(Cx/(6*A)), float(Cy/(6*A))
+
+def load_geoid_layer(path="data/sf_cells.geojson", key_field=KEY_COL):
+    p = Path(path)
+    if not p.exists():
+        st.error(f"GEOJSON bulunamadı: {path}")
+        return pd.DataFrame(columns=[key_field,"centroid_lon","centroid_lat"]), []
+    gj = json.loads(p.read_text(encoding="utf-8"))
+    rows, feats_out = [], []
+    for feat in gj.get("features", []):
+        props = feat.get("properties", {})
+        geoid = str(props.get(key_field, "")).strip()
+        if not geoid:
+            continue
+        lon = props.get("centroid_lon"); lat = props.get("centroid_lat")
+        if lon is None or lat is None:
+            geom = feat.get("geometry", {})
+            if geom.get("type") == "Polygon":
+                ring = geom["coordinates"][0]
+            elif geom.get("type") == "MultiPolygon":
+                ring = geom["coordinates"][0][0]
+            else:
+                continue
+            lon, lat = polygon_centroid(ring)
+        rows.append({key_field: geoid, "centroid_lon": float(lon), "centroid_lat": float(lat)})
+        feat.setdefault("properties", {})["id"] = geoid  # tooltip/popup için hızlı id
+        feats_out.append(feat)
+    return pd.DataFrame(rows), feats_out
 
 @st.cache_data
-def build_grid_cached():
-    return build_grid()
+def load_geoid_layer_cached(path, key_field=KEY_COL):
+    return load_geoid_layer(path, key_field)
 
-GRID_DF, GRID_FEATURES = build_grid_cached()
+GEO_DF, GEO_FEATURES = load_geoid_layer_cached("data/sf_cells.geojson", key_field=KEY_COL)
 
 def scenario_multipliers(scenario: Dict) -> float:
     mult = 1.0
@@ -93,7 +114,7 @@ def hourly_forecast(start: datetime, horizon_h: int, scenario: Dict) -> pd.DataF
     mult = scenario_multipliers(scenario)
     hours = [start + timedelta(hours=h) for h in range(horizon_h)]
     recs = []
-    for _, row in GRID_DF.iterrows():
+    for _, row in GEO_DF.iterrows():
         lon, lat = row["centroid_lon"], row["centroid_lat"]
         base = base_spatial_intensity(lon, lat)
         for ts in hours:
@@ -106,16 +127,15 @@ def hourly_forecast(start: datetime, horizon_h: int, scenario: Dict) -> pd.DataF
             types = {t: float(p_any * w[k]) for k, t in enumerate(CRIME_TYPES)}
             q10 = float(max(0.0, p_any - 0.08))
             q90 = float(min(1.0, p_any + 0.08))
-            recs.append({"cell_id": row["cell_id"], "ts": ts.isoformat(), "p_any": p_any, "q10": q10, "q90": q90, **types})
+            recs.append({KEY_COL: row[KEY_COL], "ts": ts.isoformat(),
+                         "p_any": p_any, "q10": q10, "q90": q90, **types})
     return pd.DataFrame(recs)
 
 
 def daily_forecast(start: datetime, days: int, scenario: Dict) -> pd.DataFrame:
     hourly = hourly_forecast(start, days * 24, scenario)
     hourly["date"] = hourly["ts"].str.slice(0, 10)
-    daily = (
-        hourly.groupby(["cell_id", "date"]).agg({"p_any": "mean", "q10": "mean", "q90": "mean", **{t: "mean" for t in CRIME_TYPES}}).reset_index()
-    )
+    daily = hourly.groupby([KEY_COL, "date"]).agg({"p_any":"mean","q10":"mean","q90":"mean", **{t:"mean" for t in CRIME_TYPES}}).reset_index()-
     return daily
 
 @st.cache_data(show_spinner=False)
@@ -129,11 +149,10 @@ def daily_forecast_cached(start_iso: str, days: int, scenario: Dict) -> pd.DataF
     return daily_forecast(start, days, scenario)
 
 def aggregate_for_view(df: pd.DataFrame) -> pd.DataFrame:
-    return df.groupby("cell_id").agg({"p_any": "mean", "q10": "mean", "q90": "mean", **{t: "mean" for t in CRIME_TYPES}}).reset_index()
-
+    return df.groupby(KEY_COL).agg({"p_any":"mean","q10":"mean","q90":"mean", **{t:"mean" for t in CRIME_TYPES}}).reset_index()
 
 def top_risky_table(df_agg: pd.DataFrame, n: int = 12) -> pd.DataFrame:
-    cols = ["cell_id", "p_any"] + CRIME_TYPES
+    cols = [KEY_COL, "p_any"] + CRIME_TYPES
     tab = df_agg[cols].sort_values("p_any", ascending=False).head(n).reset_index(drop=True)
     tab["p_any"] = tab["p_any"].round(3)
     for t in CRIME_TYPES:
@@ -180,7 +199,7 @@ def allocate_patrols(df_agg: pd.DataFrame, k: int, bands: List[str]) -> Dict:
     cand = choose_candidates(df_agg, bands)
     if cand.empty:
         return {"zones": []}
-    merged = cand.merge(GRID_DF, on="cell_id")
+    merged = cand.merge(GEO_DF, on=KEY_COL)
     coords = merged[["centroid_lon", "centroid_lat"]].to_numpy()
     weights = merged["p_any"].to_numpy()
     k = min(k, max(1, len(merged) // 3))
@@ -195,7 +214,13 @@ def allocate_patrols(df_agg: pd.DataFrame, k: int, bands: List[str]) -> Dict:
         angles = np.arctan2(sub["centroid_lat"] - cz[1], sub["centroid_lon"] - cz[0])
         sub = sub.assign(angle=angles).sort_values("angle")
         route = sub[["centroid_lat", "centroid_lon"]].to_numpy().tolist()
-        zones.append({"id": f"Z{z+1}", "centroid": {"lat": float(cz[1]), "lon": float(cz[0])}, "cells": sub["cell_id"].tolist(), "route": route, "expected_risk": float(sub["p_any"].mean())})
+        zones.append({
+            "id": f"Z{z+1}",
+            "centroid": {"lat": float(cz[1]), "lon": float(cz[0])},
+            "cells": sub[KEY_COL].astype(str).tolist(),   # örn. KEY_COL = "geoid"
+            "route": route,
+            "expected_risk": float(sub["p_any"].mean()),
+        })
     return {"zones": zones}
 
 
@@ -210,33 +235,39 @@ def color_for_percentile(p: float) -> str:
 def build_map(df_agg: pd.DataFrame, patrol: Dict | None = None) -> folium.Map:
     m = folium.Map(location=[37.7749, -122.4194], zoom_start=12, tiles="cartodbpositron")
     values = df_agg["p_any"].to_numpy()
-    for feat in GRID_FEATURES:
-        cid = feat["properties"]["id"]
-        row = df_agg[df_agg["cell_id"] == cid]
+    for feat in GEO_FEATURES:
+        gid = feat["properties"]["id"]  # = geoid
+        row = df_agg[df_agg[KEY_COL] == gid]
         if row.empty:
             continue
-        p = float(row["p_any"].iloc[0])
-        q10 = float(row["q10"].iloc[0])
-        q90 = float(row["q90"].iloc[0])
+        p  = float(row["p_any"].iloc[0])
+        q10 = float(row["q10"].iloc[0]); q90 = float(row["q90"].iloc[0])
         types = {t: float(row[t].iloc[0]) for t in CRIME_TYPES}
         top3 = sorted(types.items(), key=lambda x: x[1], reverse=True)[:3]
         top_html = "".join([f"<li>{t}: {v:.2f}</li>" for t, v in top3])
         popup_html = f"""
-        <b>{cid}</b><br/>
+        <b>{gid}</b><br/>
         p_any: {p:.2f} (q10={q10:.2f}, q90={q90:.2f})<br/>
         <b>En olası 3 tip</b>
         <ul style='margin-left:12px'>{top_html}</ul>
         <i>Seçili ufuk için ortalama risk</i>
         """
         style = {"fillColor": color_for_percentile(p), "color": "#666666", "weight": 0.5, "fillOpacity": 0.6}
-        folium.GeoJson(data=feat, style_function=lambda x, s=style: s, tooltip=folium.Tooltip(f"{cid} — risk {p:.2f}"), popup=folium.Popup(popup_html, max_width=280)).add_to(m)
-
+        folium.GeoJson(data=feat,
+                       style_function=lambda _x, s=style: s,
+                       tooltip=folium.Tooltip(f"{gid} — risk {p:.2f}"),
+                       popup=folium.Popup(popup_html, max_width=280)
+                       ).add_to(m)
+    
     thr99 = np.quantile(values, 0.99)
     urgent = df_agg[df_agg["p_any"] >= thr99]
     for _, r in urgent.iterrows():
-        lat = GRID_DF.loc[GRID_DF["cell_id"] == r["cell_id"], "centroid_lat"].values[0]
-        lon = GRID_DF.loc[GRID_DF["cell_id"] == r["cell_id"], "centroid_lon"].values[0]
-        folium.CircleMarker(location=[lat, lon], radius=6, color="#000", fill=True, fill_color="#ff0000", popup=folium.Popup("ACİL — üst %1 risk", max_width=150)).add_to(m)
+        lat = GEO_DF.loc[GEO_DF[KEY_COL] == r[KEY_COL], "centroid_lat"].values[0]
+        lon = GEO_DF.loc[GEO_DF[KEY_COL] == r[KEY_COL], "centroid_lon"].values[0]
+        folium.CircleMarker(location=[lat, lon], radius=6, color="#000",
+                            fill=True, fill_color="#ff0000",
+                            popup=folium.Popup("ACİL — üst %1 risk", max_width=150)
+                            ).add_to(m)
 
     if patrol and patrol.get("zones"):
         for z in patrol["zones"]:
