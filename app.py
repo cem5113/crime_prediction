@@ -331,7 +331,11 @@ def allocate_patrols(
 def color_for_tier(tier: str) -> str:
     return {"Yüksek": "#d62728", "Orta": "#ff7f0e", "Hafif": "#1f77b4"}.get(tier, "#1f77b4")
 
-def build_map(df_agg: pd.DataFrame, patrol: Dict | None = None) -> folium.Map:
+def build_map(
+    df_agg: pd.DataFrame,
+    patrol: Dict | None = None,
+    show_popups: bool = True
+) -> folium.Map:
     # Boş/eksik durumda güvenli çık
     m = folium.Map(location=[37.7749, -122.4194], zoom_start=12, tiles="cartodbpositron")
     if df_agg is None or df_agg.empty or KEY_COL not in df_agg.columns:
@@ -340,21 +344,25 @@ def build_map(df_agg: pd.DataFrame, patrol: Dict | None = None) -> folium.Map:
     # Boyama ve "acil" eşiği expected üzerinden
     values = df_agg["expected"].to_numpy()
 
+    # Hızlı erişim için index
+    idx = df_agg.set_index(KEY_COL)
+
     for feat in GEO_FEATURES:
-        gid = feat["properties"]["id"]  # = geoid
-        row = df_agg.loc[df_agg[KEY_COL] == gid]
-        if row.empty:
+        gid = feat["properties"].get("id")  # = geoid
+        if gid not in idx.index:
             continue
-    
-        expected = float(row["expected"].iloc[0])
-        tier     = str(row["tier"].iloc[0])
-        q10      = float(row["q10"].iloc[0])
-        q90      = float(row["q90"].iloc[0])
-        types    = {t: float(row[t].iloc[0]) for t in CRIME_TYPES}
-    
-        top3 = sorted(types.items(), key=lambda x: x[1], reverse=True)[:3]
-        top_html = "".join([f"<li>{t}: {v:.2f}</li>" for t, v in top3])
-    
+
+        r = idx.loc[gid]
+        expected = float(r["expected"])
+        tier     = str(r["tier"])
+        q10      = float(r["q10"])
+        q90      = float(r["q90"])
+        types    = [(t, float(r[t])) for t in CRIME_TYPES]
+
+        # en olası 3 suç
+        top3 = sorted(types, key=lambda x: x[1], reverse=True)[:3]
+        top_html = "".join(f"<li>{t}: {v:.2f}</li>" for t, v in top3)
+
         popup_html = f"""
         <b>{gid}</b><br/>
         E[olay] (ufuk): {expected:.2f} &nbsp;•&nbsp; Öncelik: <b>{tier}</b><br/>
@@ -362,42 +370,42 @@ def build_map(df_agg: pd.DataFrame, patrol: Dict | None = None) -> folium.Map:
         <ul style='margin-left:12px'>{top_html}</ul>
         <i>Belirsizlik (saatlik ort.): q10={q10:.2f}, q90={q90:.2f}</i>
         """
-    
+
         style = {
             "fillColor": color_for_tier(tier),
             "color": "#666666",
             "weight": 0.5,
             "fillOpacity": 0.6,
         }
-    
-        # >>> DEĞİŞEN KISIM: popup'ı sonradan bağla + highlight ekle
+
+        # GeoJSON'u ekle, popup'ı (opsiyonel) sonradan bağla
         geo = folium.GeoJson(
             data=feat,
             style_function=lambda _x, s=style: s,
-            highlight_function=lambda _x: {
-                "weight": 1.5,
-                "color": "#000000",
-                "fillOpacity": 0.7,
-            },
+            highlight_function=lambda _x: {"weight": 1.5, "color": "#000000", "fillOpacity": 0.7},
             tooltip=folium.Tooltip(f"{gid} — E[olay]: {expected:.2f} — {tier}"),
         )
-        folium.Popup(popup_html, max_width=280).add_to(geo)
+        # Popup: sadece Yüksek/Orta için ekle (istersen 'or True' yapıp hepsine aç)
+        if show_popups and tier != "Hafif":
+            folium.Popup(popup_html, max_width=280).add_to(geo)
         geo.add_to(m)
 
     # En yüksek %1 beklenen olaya kırmızı uyarı
-    thr99 = np.quantile(values, 0.99)
-    urgent = df_agg[df_agg["expected"] >= thr99]
-    for _, r in urgent.iterrows():
-        lat = GEO_DF.loc[GEO_DF[KEY_COL] == r[KEY_COL], "centroid_lat"].values[0]
-        lon = GEO_DF.loc[GEO_DF[KEY_COL] == r[KEY_COL], "centroid_lon"].values[0]
-        folium.CircleMarker(
-            location=[lat, lon],
-            radius=6,
-            color="#000",
-            fill=True,
-            fill_color="#ff0000",
-            popup=folium.Popup("ACİL — üst %1 E[olay]", max_width=150),
-        ).add_to(m)
+    if len(values):
+        thr99 = np.quantile(values, 0.99)
+        urgent = df_agg[df_agg["expected"] >= thr99]
+        merged = urgent.merge(GEO_DF[[KEY_COL, "centroid_lat", "centroid_lon"]], on=KEY_COL, how="left")
+        for _, rr in merged.iterrows():
+            if pd.isna(rr.get("centroid_lat")) or pd.isna(rr.get("centroid_lon")):
+                continue
+            folium.CircleMarker(
+                location=[float(rr["centroid_lat"]), float(rr["centroid_lon"])],
+                radius=6,
+                color="#000",
+                fill=True,
+                fill_color="#ff0000",
+                popup=folium.Popup("ACİL — üst %1 E[olay]", max_width=150),
+            ).add_to(m)
 
     # Devriye rotaları
     if patrol and patrol.get("zones"):
@@ -406,12 +414,15 @@ def build_map(df_agg: pd.DataFrame, patrol: Dict | None = None) -> folium.Map:
             folium.Marker(
                 [z["centroid"]["lat"], z["centroid"]["lon"]],
                 icon=folium.DivIcon(
-                    html=f"<div style='background:#111;color:#fff;padding:2px 6px;border-radius:6px'> {z['id']} </div>"
+                    html=(
+                        "<div style='background:#111;color:#fff;padding:2px 6px;"
+                        "border-radius:6px'> {}</div>".format(z["id"])
+                    )
                 ),
             ).add_to(m)
 
     return m
-
+    
 def build_map_fast(df_agg: pd.DataFrame, show_popups: bool = False, patrol: Dict | None = None) -> folium.Map:
     m = folium.Map(location=[37.7749, -122.4194], zoom_start=12, tiles="cartodbpositron")
     if df_agg is None or df_agg.empty:
@@ -534,6 +545,7 @@ cell_minutes = st.sidebar.number_input("Hücre başına ort. kontrol (dk)", min_
 colA, colB = st.sidebar.columns(2)
 btn_predict = colA.button("Tahmin et")
 btn_patrol  = colB.button("Devriye öner", disabled=st.session_state.get("agg") is None)
+show_popups = st.sidebar.checkbox("Hücre pop-up (Top 3 suç)", value=True)
 
 st.sidebar.caption("• Tahmin et: seçtiğin aralık için riskleri hesaplar.  • Devriye öner: K ekip ve görev süresine göre kümeler/rota üretir.")
 
@@ -552,25 +564,40 @@ col1, col2 = st.columns([2.4, 1.0])
 
 with col1:
     st.caption(f"Son güncelleme (SF): {now_sf_iso()}")
-    if btn_predict or st.session_state["agg"] is None:
+
+    if btn_predict or st.session_state.get("agg") is None:
         start_dt = (
             datetime.utcnow()
             + timedelta(hours=SF_TZ_OFFSET + start_h)
         ).replace(minute=0, second=0, microsecond=0)
-        horizon_h = max(1, end_h - start_h)
 
+        horizon_h = max(1, end_h - start_h)
         start_iso = start_dt.isoformat()
+
+        # Hızlı agregasyon
         agg = aggregate_fast(start_iso, horizon_h)
 
-        # eski "df" artık yok; forecast'ı boş geçiyoruz
-        st.session_state["forecast"] = None
+        st.session_state["forecast"] = None   # eski df kullanılmıyor
         st.session_state["agg"] = agg
-        st.session_state["patrol"] = None
+        st.session_state["patrol"] = None     # yeni tahmin → devriye sıfırlansın
 
-    agg = st.session_state["agg"]
-    m = build_map_fast(agg, show_popups=False, patrol=st.session_state.get("patrol"))
-    st_folium(m, width=None, height=620)
-    m = build_map_fast(agg, show_popups=True, patrol=st.session_state.get("patrol"))
+    agg = st.session_state.get("agg")
+
+    if agg is not None:
+        show_popups = st.checkbox(
+            "Hücre popup'larını (en olası 3 suç) göster",
+            value=True,
+            help="Kapatırsanız harita biraz daha hızlı çalışır."
+        )
+
+        m = build_map_fast(
+            agg,
+            show_popups=show_popups,
+            patrol=st.session_state.get("patrol")
+        )
+        st_folium(m, width=None, height=620)
+    else:
+        st.info("Önce ‘Tahmin et’ ile bir tahmin üretin.")
     
 with col2:
     st.subheader("KPI")
