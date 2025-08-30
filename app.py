@@ -407,107 +407,88 @@ def top_risky_table(df_agg: pd.DataFrame, n: int = 12) -> pd.DataFrame:
 # RAPOR METRİK YARDIMCILARI
 # =============================
 @st.cache_data(show_spinner=False)
-def load_events(path: str = "data/events.csv") -> pd.DataFrame:
-    """Gerçek olaylar. Sütunlar: ts (ISO/datetime), geoid (str), type (ops.)."""
+def load_events(path: str = "data/sf_crime.csv") -> pd.DataFrame:
+    """
+    Olay verisini şu sırayla dener:
+    1) Lokal 'data/events.csv'
+    2) Public repo: raw.githubusercontent üzerinden
+    3) Private repo: GitHub Content API (+token)
+    Beklenen kolonlar: ts (datetime), geoid (str), type (opsiyonel)
+    """
+    # 1) Lokal dosya varsa onu kullan
     p = Path(path)
-    if not p.exists():
+    if p.exists():
+        df = pd.read_csv(p, parse_dates=["ts"])
+        df[KEY_COL] = df[KEY_COL].astype(str)
+        if "type" not in df.columns:
+            df["type"] = "unknown"
+        return df[["ts", KEY_COL, "type"]]
+
+    # 2) Secrets
+    repo = (st.secrets.get("REPO") or "").strip()
+    branch = (st.secrets.get("BRANCH") or "main").strip()
+    events_path = (st.secrets.get("EVENTS_PATH") or "").lstrip("/")
+    token = (st.secrets.get("GITHUB_TOKEN") or "").strip()
+
+    if not repo or not events_path:
         return pd.DataFrame(columns=["ts", KEY_COL, "type"])
-    df = pd.read_csv(p, parse_dates=["ts"])
-    df[KEY_COL] = df[KEY_COL].astype(str)
-    return df
 
-def slice_events(events: pd.DataFrame, start_iso: str, horizon_h: int) -> pd.DataFrame:
-    start = datetime.fromisoformat(start_iso)
-    end = start + timedelta(hours=horizon_h)
-    m = (events["ts"] >= start) & (events["ts"] < end)
-    return events.loc[m, [KEY_COL, "ts", "type"]].copy()
+    # Yardımcı: kolon adlarını standardize et
+    def _standardize(df: pd.DataFrame) -> pd.DataFrame:
+        rename_map = {}
+        cand = {
+            "ts":   ["ts", "timestamp", "datetime", "incident_datetime", "date"],
+            KEY_COL:["geoid", "grid", "grid_id", "cell_id"],
+            "type": ["type", "category", "crime_type", "offense_category"],
+        }
+        for tgt, cands in cand.items():
+            for c in cands:
+                if c in df.columns:
+                    rename_map[c] = tgt
+                    break
+        df = df.rename(columns=rename_map)
+        # ts → datetime
+        if "ts" in df.columns and not np.issubdtype(df["ts"].dtype, np.datetime64):
+            df["ts"] = pd.to_datetime(df["ts"], errors="coerce")
+        # geoid → str
+        if KEY_COL in df.columns:
+            df[KEY_COL] = df[KEY_COL].astype(str)
+        # type yoksa doldur
+        if "type" not in df.columns:
+            df["type"] = "unknown"
+        df = df.dropna(subset=["ts"])
+        keep = [c for c in ["ts", KEY_COL, "type"] if c in df.columns]
+        return df[keep]
 
-def prep_eval_frames(agg: pd.DataFrame, ev: pd.DataFrame) -> pd.DataFrame:
-    cnts = ev.groupby(KEY_COL).size().rename("y_count")
-    ybin = (cnts > 0).astype(int).rename("y")
-    out = (
-        agg[[KEY_COL, "expected"]]
-        .merge(ybin, on=KEY_COL, how="left")
-        .merge(cnts, on=KEY_COL, how="left")
-        .fillna({"y": 0, "y_count": 0})
-    )
-    out["p"] = 1.0 - np.exp(-out["expected"].clip(lower=0))
-    return out
+    # 3) Public repo: raw URL
+    raw_url = f"https://raw.githubusercontent.com/{repo}/{branch}/{events_path}"
+    try:
+        df = pd.read_csv(raw_url)
+        df = _standardize(df)
+        # parse_dates kaçırdıysa:
+        if not np.issubdtype(df["ts"].dtype, np.datetime64):
+            df["ts"] = pd.to_datetime(df["ts"], errors="coerce")
+        return df
+    except Exception:
+        pass
 
-def pai_at_k(eval_df: pd.DataFrame, k_pct: int) -> tuple[float, float]:
-    """PAI@K ve alan içindeki olay payını döndürür."""
-    if eval_df["y_count"].sum() == 0:
-        return float("nan"), 0.0
-    frac = k_pct / 100.0
-    n = len(eval_df)
-    top_k = max(1, int(round(n * frac)))
-    d = eval_df.sort_values("expected", ascending=False).head(top_k)
-    event_share = d["y_count"].sum() / eval_df["y_count"].sum()
-    return (event_share / frac), event_share
-
-# ---- Küçük HTML üreticileri (indirme için) ----
-def brief_html(top5: pd.DataFrame, lines: list[str], patrol_rows: list[dict], start_iso: str, horizon_h: int) -> str:
-    win = risk_window_text(start_iso, horizon_h)
-    rows_html = "".join(
-        f"<tr><td>{r[KEY_COL]}</td><td>{r['E[olay] (λ)']}</td></tr>" for _, r in top5[[KEY_COL,'E[olay] (λ)']].iterrows()
-    )
-    anons_html = "".join(f"<li>{ln}</li>" for ln in lines)
-    patrol_html = "".join(
-        f"<tr><td>{z['zone']}</td><td>{z['cells_planned']}/{z['capacity_cells']}</td>"
-        f"<td>{z['eta_minutes']} dk</td><td>{z['avg_risk(E[olay])']}</td></tr>" for z in patrol_rows
-    )
-    return f"""
-    <html><head><meta charset="utf-8"><style>
-    body{{font-family:system-ui,Arial;}} h2{{margin:6px 0}} table{{border-collapse:collapse;width:100%}}
-    td,th{{border:1px solid #ccc;padding:6px;text-align:left}} small{{color:#555}}
-    </style></head><body>
-    <h2>Vardiya Brifi</h2>
-    <small>Risk penceresi: {win}</small>
-    <h3>Top-5 Bölge</h3>
-    <table><tr><th>GEOID</th><th>E[olay] (λ)</th></tr>{rows_html}</table>
-    <h3>Radyo Anonsları</h3><ul>{anons_html}</ul>
-    <h3>Önerilen Devriye</h3>
-    <table><tr><th>Zone</th><th>Plan/Kapasite</th><th>Süre</th><th>Ort. Risk</th></tr>{patrol_html}</table>
-    <p><small>Not: Güven seviyesi metin içinde hücre bazında yer alır.</small></p>
-    </body></html>
-    """
-
-def weekly_html(pai10: float, share10: float, top10: pd.DataFrame) -> str:
-    rows = "".join(
-        f"<tr><td>{r[KEY_COL]}</td><td>{r['E[olay] (λ)']}</td></tr>" for _, r in top10[[KEY_COL,'E[olay] (λ)']].iterrows()
-    )
-    pai_txt = "—" if np.isnan(pai10) else f"{pai10:.2f} (alan %10 → olay %{share10*100:.1f})"
-    return f"""
-    <html><head><meta charset="utf-8"><style>
-    body{{font-family:system-ui,Arial;}} table{{border-collapse:collapse;width:100%}}
-    td,th{{border:1px solid #ccc;padding:6px;text-align:left}}
-    </style></head><body>
-    <h2>Haftalık Operasyon Özeti</h2>
-    <p><b>PAI@10:</b> {pai_txt}</p>
-    <h3>Top-10 Hotspot</h3>
-    <table><tr><th>GEOID</th><th>E[olay] (λ)</th></tr>{rows}</table>
-    </body></html>
-    """
-
-# --- Devriye kümeleme ---
-def kmeans_like(coords: np.ndarray, weights: np.ndarray, k: int, iters: int = 20):
-    n = len(coords)
-    k = min(k, n)
-    idx_sorted = np.argsort(-weights)
-    centroids = coords[idx_sorted[:k]].copy()
-    assign = np.zeros(n, dtype=int)
-    for _ in range(iters):
-        dists = np.linalg.norm(coords[:, None, :] - centroids[None, :, :], axis=2)
-        assign = np.argmin(dists, axis=1)
-        for c in range(k):
-            m = assign == c
-            if not np.any(m):
-                centroids[c] = coords[idx_sorted[0]]
-            else:
-                w = weights[m][:, None]
-                centroids[c] = (coords[m] * w).sum(axis=0) / max(1e-6, w.sum())
-    return centroids, assign
-
+    # 4) Private repo: GitHub Content API
+    try:
+        api_url = f"https://api.github.com/repos/{repo}/contents/{events_path}?ref={branch}"
+        headers = {"Accept": "application/vnd.github+json"}
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+        r = requests.get(api_url, headers=headers, timeout=30)
+        r.raise_for_status()
+        content_b64 = r.json().get("content", "")
+        by = base64.b64decode(content_b64)
+        df = pd.read_csv(io.BytesIO(by))
+        df = _standardize(df)
+        if not np.issubdtype(df["ts"].dtype, np.datetime64):
+            df["ts"] = pd.to_datetime(df["ts"], errors="coerce")
+        return df
+    except Exception:
+        return pd.DataFrame(columns=["ts", KEY_COL, "type"])
 # >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
 # YENİ: K ve görev süresiyle devriye planlama
 def allocate_patrols(
@@ -1078,9 +1059,9 @@ elif sekme == "Raporlar":
 
     # -------- HAFTALIK OPERASYON ÖZETİ --------
     with tab2:
-        events = load_events("data/events.csv")
+        events = load_events()
         if events.empty:
-            st.warning("`data/events.csv` yok/boş: örnek metrikler gerçek olay olmadan hesaplanamaz.")
+            st.warning("`data/sf_crime.csv` yok/boş: örnek metrikler gerçek olay olmadan hesaplanamaz.")
             top10 = top_risky_table(agg, n=10)
             html = weekly_html(float("nan"), 0.0, top10).encode("utf-8")
             st.dataframe(top10, use_container_width=True, height=260)
@@ -1112,7 +1093,7 @@ elif sekme == "Raporlar":
 
     # -------- MODEL SAĞLIK KARTI --------
     with tab3:
-        events = load_events("data/events.csv")
+        events = load_events("data/sf_crime.csv")
         if events.empty:
             st.info("Gerçek olay olmadan Brier/kapsama hesaplanamaz.")
         else:
