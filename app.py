@@ -90,6 +90,15 @@ GEO_DF, GEO_FEATURES = load_geoid_layer_cached("data/sf_cells.geojson", key_fiel
 if GEO_DF.empty:
     st.error("GEOJSON yüklendi ama satır gelmedi. 'data/sf_cells.geojson' içinde 'properties.geoid' eksik olabilir.")
 
+def nearest_geoid(lat: float, lon: float) -> str | None:
+    if GEO_DF.empty:
+        return None
+    la = GEO_DF["centroid_lat"].to_numpy()
+    lo = GEO_DF["centroid_lon"].to_numpy()
+    d2 = (la - lat) ** 2 + (lo - lon) ** 2
+    i = int(np.argmin(d2))
+    return str(GEO_DF.iloc[i][KEY_COL])
+    
 def local_explain(df_agg: pd.DataFrame, geoid: str, start_iso: str, horizon_h: int) -> Dict:
     # Hücre satırı
     row = df_agg.loc[df_agg[KEY_COL] == geoid]
@@ -637,16 +646,33 @@ with col1:
             show_popups=show_popups,
             patrol=st.session_state.get("patrol")
         )
-        ret = st_folium(m, width=None, height=620)
-    
+        ret = st_folium(
+            m,
+            width=None,
+            height=620,
+            returned_objects=["last_object_clicked", "last_clicked"]  # 0.21 için güvenli
+        )
+            
         # tıklanan hücre GEOID'ini yakala
         clicked_gid = None
         if ret:
+            # 1) GeoJSON objesinden doğrudan oku
             obj = ret.get("last_object_clicked") or ret.get("last_active_drawing")
             if obj and isinstance(obj, dict):
-                props = obj.get("properties", {})
+                props = (
+                    obj.get("properties")
+                    or obj.get("feature", {}).get("properties", {})
+                    or {}
+                )
                 clicked_gid = props.get("id") or props.get(KEY_COL)
-    
+        
+            # 2) Fallback: sadece koordinat geldiyse en yakın hücreyi bul
+            if not clicked_gid:
+                last_clicked = ret.get("last_clicked")
+                if isinstance(last_clicked, (list, tuple)) and len(last_clicked) == 2:
+                    lat, lon = float(last_clicked[0]), float(last_clicked[1])
+                    clicked_gid = nearest_geoid(lat, lon)
+
         # açıklama için gerekli zaman bilgisi
         start_iso  = st.session_state.get("start_iso")
         horizon_h  = st.session_state.get("horizon_h")
