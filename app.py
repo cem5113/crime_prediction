@@ -90,6 +90,47 @@ GEO_DF, GEO_FEATURES = load_geoid_layer_cached("data/sf_cells.geojson", key_fiel
 if GEO_DF.empty:
     st.error("GEOJSON yüklendi ama satır gelmedi. 'data/sf_cells.geojson' içinde 'properties.geoid' eksik olabilir.")
 
+def local_explain(df_agg: pd.DataFrame, geoid: str, start_iso: str, horizon_h: int) -> Dict:
+    # Hücre satırı
+    row = df_agg.loc[df_agg[KEY_COL] == geoid]
+    if row.empty:
+        return {}
+    row = row.iloc[0]
+
+    # Mekansal bileşen
+    ixs = GEO_DF.index[GEO_DF[KEY_COL] == geoid]
+    if len(ixs) == 0:
+        return {}
+    i = int(ixs[0])
+    spatial = float(BASE_INT[i])
+
+    # Zaman bileşeni (aynısını aggregate_fast’ta kullanıyoruz)
+    start = datetime.fromisoformat(start_iso)
+    hours = np.arange(horizon_h)
+    diurnal = 1.0 + 0.4 * np.sin((((start.hour + hours) % 24 - 18) / 24) * 2 * np.pi)
+    temporal = float(np.mean(diurnal))
+
+    # Senaryo/ek faktör (şimdilik 1.0; ileride hava/etkinlik ekleyince değiştir)
+    scenario = 1.0
+
+    # Katkıları "E[olay]" büyüklüğüne oranlayarak normalize et
+    expected = float(row["expected"])
+    parts_raw = {"Mekânsal sıcak-nokta": spatial, "Saat etkisi": temporal, "Senaryo": scenario}
+    s = sum(parts_raw.values())
+    contribs = {k: (v / s) * expected for k, v in parts_raw.items()}
+
+    # Top 3 suç
+    top_types = sorted([(t, float(row[t])) for t in CRIME_TYPES], key=lambda x: x[1], reverse=True)[:3]
+
+    return {
+        "expected": expected,
+        "tier": str(row["tier"]),
+        "q10": float(row["q10"]),
+        "q90": float(row["q90"]),
+        "contribs": contribs,
+        "top_types": top_types,
+    }
+
 # --------- HIZLI AGGREGATION BLOĞU (EKLE: GEO_DF satırının hemen altına) ---------
 @st.cache_data(show_spinner=False)
 def precompute_base_intensity(geo_df: pd.DataFrame) -> np.ndarray:
@@ -581,22 +622,71 @@ with col1:
         # Hızlı agregasyon
         agg = aggregate_fast(start_iso, horizon_h)
 
-        st.session_state["forecast"] = None   # eski df kullanılmıyor
+        st.session_state["forecast"] = None
         st.session_state["agg"] = agg
-        st.session_state["patrol"] = None     # yeni tahmin → devriye sıfırlansın
+        st.session_state["patrol"] = None
+        st.session_state["start_iso"] = start_iso
+        st.session_state["horizon_h"] = horizon_h
 
     agg = st.session_state.get("agg")
-
+    
     if agg is not None:
+        # haritayı ÇİZ ve DÖNÜŞ değerini AL (tek çağrı!)
         m = build_map_fast(
             agg,
-            show_popups=show_popups,        
+            show_popups=show_popups,
             patrol=st.session_state.get("patrol")
         )
-        st_folium(m, width=None, height=620)
+        ret = st_folium(m, width=None, height=620)
+    
+        # tıklanan hücre GEOID'ini yakala
+        clicked_gid = None
+        if ret:
+            obj = ret.get("last_object_clicked") or ret.get("last_active_drawing")
+            if obj and isinstance(obj, dict):
+                props = obj.get("properties", {})
+                clicked_gid = props.get("id") or props.get(KEY_COL)
+    
+        # açıklama için gerekli zaman bilgisi
+        start_iso  = st.session_state.get("start_iso")
+        horizon_h  = st.session_state.get("horizon_h")
+        if (start_iso is None) or (horizon_h is None):
+            # butona basılmadan önce de çalışabilsin diye emniyet
+            start_dt = (datetime.utcnow() + timedelta(hours=SF_TZ_OFFSET + start_h)).replace(minute=0, second=0, microsecond=0)
+            start_iso = start_dt.isoformat()
+            horizon_h = max(1, end_h - start_h)
+    
+        # tıklanınca state'e açıklamayı yaz
+        if clicked_gid:
+            st.session_state["explain"] = {
+                "geoid": clicked_gid,
+                "data": local_explain(agg, clicked_gid, start_iso, horizon_h),
+            }
+    
+        # --- SOLA (haritanın ALTINA) AÇIKLAMA PANELİ ---
+        st.markdown("### Açıklama (seçili hücre)")
+        info = st.session_state.get("explain")
+        if info and info.get("data"):
+            geoid = info["geoid"]
+            ex = info["data"]
+    
+            c1, c2, c3 = st.columns(3)
+            c1.metric("Hücre", geoid)
+            c2.metric("E[olay] (λ)", f"{ex['expected']:.2f}")
+            c3.metric("Öncelik", ex["tier"])
+    
+            st.caption("En olası 3 suç")
+            st.write(", ".join([f"{t} ({v:.2f})" for t, v in ex["top_types"]]))
+    
+            contrib_df = pd.DataFrame({"katkı (λ)": ex["contribs"]}).sort_values("katkı (λ)")
+            st.bar_chart(contrib_df)
+    
+            st.caption(f"Belirsizlik bandı: q10={ex['q10']:.2f} • q90={ex['q90']:.2f}")
+        else:
+            st.info("Haritada bir hücreye tıklarsanız açıklama burada görünecek.")
     else:
         st.info("Önce ‘Tahmin et’ ile bir tahmin üretin.")
-    
+
 with col2:
     st.subheader("KPI")
     if st.session_state["agg"] is not None:
