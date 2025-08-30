@@ -6,14 +6,22 @@ from typing import Dict, List, Tuple
 
 import numpy as np
 import pandas as pd
-import streamlit as st
 import folium
 from streamlit_folium import st_folium
 import json
 from pathlib import Path
 
-import altair as alt  
+import streamlit as st
+import altair as alt
 
+# =============================
+# SAYFA AYARLARI (ÖNCE!)
+# =============================
+st.set_page_config(page_title="SUTAM: Suç Tahmin Modeli", layout="wide")
+
+# =============================
+# KÜÇÜK UI / CSS
+# =============================
 SMALL_UI_CSS = """
 <style>
 /* Genel yazı boyutu */
@@ -50,10 +58,7 @@ footer { visibility: hidden; }
 """
 st.markdown(SMALL_UI_CSS, unsafe_allow_html=True)
 
-# =============================
-# SAYFA AYARLARI
-# =============================
-st.set_page_config(page_title="SUTAM: Suç Tahmin Modeli", layout="wide")
+# Başlık
 st.title("SUTAM: Suç Tahmin Modeli")
 
 # =============================
@@ -64,6 +69,7 @@ CRIME_TYPES = ["assault", "burglary", "theft", "robbery", "vandalism"]
 KEY_COL = "geoid"
 CACHE_VERSION = "v2-geo-poisson"
 
+import numpy as np
 rng = np.random.default_rng(42)
 
 # =============================
@@ -827,33 +833,28 @@ with col1:
             for t in tips:
                 st.markdown(f"  - {t}")
             
-            # 3) (İsterseniz) kısa çubuk grafik: katkılar
+            # 3) Katkılar (Altair layer)
             contrib_df = (
                 pd.Series(ex["contribs"], name="lambda")
                   .reset_index()
                   .rename(columns={"index": "Bileşen"})
             )
+            # emniyet: sayısal olsun
+            contrib_df["lambda"] = pd.to_numeric(contrib_df["lambda"], errors="coerce").fillna(0)
             
-            chart = (
-                alt.Chart(contrib_df)
-                .mark_bar()
-                .encode(
-                    y=alt.Y("Bileşen:N", sort="-x", title=None),
-                    x=alt.X("lambda:Q", title="Katkı (λ)"),
-                    tooltip=["Bileşen:N", alt.Tooltip("lambda:Q", format=".2f", title="Katkı (λ)")]
-                )
-                .properties(height=160)
+            bars = alt.Chart(contrib_df).mark_bar().encode(
+                y=alt.Y("Bileşen:N", sort="-x", title=None),
+                x=alt.X("lambda:Q", title="Katkı (λ)"),
+                tooltip=["Bileşen:N", alt.Tooltip("lambda:Q", format=".2f", title="Katkı (λ)")],
+            ).properties(height=160)
+            
+            labels = alt.Chart(contrib_df).mark_text(align="left", dx=4).encode(
+                y="Bileşen:N", x="lambda:Q", text=alt.Text("lambda:Q", format=".2f")
             )
             
-            # İsteğe bağlı: üstüne değer etiketi
-            labels = (
-                alt.Chart(contrib_df)
-                .mark_text(align="left", dx=4)
-                .encode(y="Bileşen:N", x="lambda:Q", text=alt.Text("lambda:Q", format=".2f"))
-            )
-            
-            st.altair_chart(chart + labels, use_container_width=True)
-            
+            layer = alt.layer(bars, labels, data=contrib_df)  # << kritik: data root'ta
+            st.altair_chart(layer, use_container_width=True)
+                        
             # 4) Radyo anonsu – kopyalanabilir tek cümle
             lead1 = ex["top_types"][0][0] if ex["top_types"] else "-"
             lead2 = ex["top_types"][1][0] if len(ex["top_types"]) > 1 else "-"
