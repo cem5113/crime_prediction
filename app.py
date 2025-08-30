@@ -345,16 +345,16 @@ def build_map(df_agg: pd.DataFrame, patrol: Dict | None = None) -> folium.Map:
         row = df_agg.loc[df_agg[KEY_COL] == gid]
         if row.empty:
             continue
-
+    
         expected = float(row["expected"].iloc[0])
         tier     = str(row["tier"].iloc[0])
         q10      = float(row["q10"].iloc[0])
         q90      = float(row["q90"].iloc[0])
         types    = {t: float(row[t].iloc[0]) for t in CRIME_TYPES}
-
+    
         top3 = sorted(types.items(), key=lambda x: x[1], reverse=True)[:3]
         top_html = "".join([f"<li>{t}: {v:.2f}</li>" for t, v in top3])
-
+    
         popup_html = f"""
         <b>{gid}</b><br/>
         E[olay] (ufuk): {expected:.2f} &nbsp;•&nbsp; Öncelik: <b>{tier}</b><br/>
@@ -362,20 +362,27 @@ def build_map(df_agg: pd.DataFrame, patrol: Dict | None = None) -> folium.Map:
         <ul style='margin-left:12px'>{top_html}</ul>
         <i>Belirsizlik (saatlik ort.): q10={q10:.2f}, q90={q90:.2f}</i>
         """
-
+    
         style = {
             "fillColor": color_for_tier(tier),
             "color": "#666666",
             "weight": 0.5,
             "fillOpacity": 0.6,
         }
-
-        folium.GeoJson(
+    
+        # >>> DEĞİŞEN KISIM: popup'ı sonradan bağla + highlight ekle
+        geo = folium.GeoJson(
             data=feat,
             style_function=lambda _x, s=style: s,
+            highlight_function=lambda _x: {
+                "weight": 1.5,
+                "color": "#000000",
+                "fillOpacity": 0.7,
+            },
             tooltip=folium.Tooltip(f"{gid} — E[olay]: {expected:.2f} — {tier}"),
-            popup=folium.Popup(popup_html, max_width=280),
-        ).add_to(m)
+        )
+        folium.Popup(popup_html, max_width=280).add_to(geo)
+        geo.add_to(m)
 
     # En yüksek %1 beklenen olaya kırmızı uyarı
     thr99 = np.quantile(values, 0.99)
