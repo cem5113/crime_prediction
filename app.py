@@ -15,8 +15,8 @@ from pathlib import Path
 # =============================
 # SAYFA AYARLARI
 # =============================
-st.set_page_config(page_title="SF Crime Risk — Devriye Planlama (Prototip)", layout="wide")
-st.title("SF Crime Risk — Devriye Planlama (Prototip)")
+st.set_page_config(page_title="SUTAM: Suç Tahmin Modeli", layout="wide")
+st.title("SUTAM: Suç Tahmin Modeli")
 
 # =============================
 # SABİTLER
@@ -145,43 +145,52 @@ def daily_forecast_cached(start_iso: str, days: int, scenario: Dict, _v=CACHE_VE
     return daily_forecast(start, days, scenario)
 
 def aggregate_for_view(df: pd.DataFrame) -> pd.DataFrame:
-    # Eski sonuçlardan gelme 'cell_id' varsa otomatik düzelt
-    if KEY_COL not in df.columns and "cell_id" in df.columns:
-        df = df.rename(columns={"cell_id": KEY_COL})
+    # Ortalama belirsizlik göstergeleri (popup için)
+    mean_map = {"p_any": "mean", "q10": "mean", "q90": "mean"}
+    # Ufuk boyunca beklenen olay sayıları (SUM) – asıl risk metrikleri
+    sum_map  = {"p_any": "sum"} | {t: "sum" for t in CRIME_TYPES}
 
-    # Hatalı/boş veri guard
-    if KEY_COL not in df.columns:
-        st.error(f"Tahmin çıktısında '{KEY_COL}' kolonu yok. Mevcut kolonlar: {list(df.columns)}")
-        return pd.DataFrame(columns=[KEY_COL, "p_any", "q10", "q90"] + CRIME_TYPES)
+    mean_part = df.groupby(KEY_COL, as_index=False).agg(mean_map)
+    sum_part  = df.groupby(KEY_COL, as_index=False).agg(sum_map)
 
-    agg_map = {"p_any": "mean", "q10": "mean", "q90": "mean"}
-    agg_map.update({t: "mean" for t in CRIME_TYPES})
-    return df.groupby(KEY_COL, as_index=False).agg(agg_map)
+    out = mean_part.drop(columns=["p_any"]).merge(sum_part, on=KEY_COL)
+    out = out.rename(columns={"p_any": "expected"})  # beklenen olay sayısı
+
+    # Öncelik sınıfları (quantile eşikleri expected üzerinden)
+    q90 = out["expected"].quantile(0.90)
+    q70 = out["expected"].quantile(0.70)
+    out["tier"] = np.select(
+        [out["expected"] >= q90, out["expected"] >= q70],
+        ["Yüksek", "Orta"],
+        default="Hafif",
+    )
+    return out
     
 def top_risky_table(df_agg: pd.DataFrame, n: int = 12) -> pd.DataFrame:
-    cols = [KEY_COL, "p_any"] + CRIME_TYPES
-    tab = df_agg[cols].sort_values("p_any", ascending=False).head(n).reset_index(drop=True)
-    tab["p_any"] = tab["p_any"].round(3)
+    cols = [KEY_COL, "expected"] + CRIME_TYPES
+    tab = df_agg[cols].sort_values("expected", ascending=False).head(n).reset_index(drop=True)
+    tab["expected"] = tab["expected"].round(2)  # beklenen olay sayısı
     for t in CRIME_TYPES:
         tab[t] = tab[t].round(3)
+    tab = tab.rename(columns={"expected": "E[olay]"})
     return tab
-
 
 def percentile_threshold(series: pd.Series, p: float) -> float:
     return float(np.quantile(series.to_numpy(), p))
 
 
 def choose_candidates(df_agg: pd.DataFrame, bands: List[str]) -> pd.DataFrame:
+    # bands = ["Yüksek", "Orta"] vs; percentiller RISK_BANDS sözlüğünden
     lo, hi = 1.0, 0.0
     for b in bands:
         bl, bh = RISK_BANDS[b]
         lo = min(lo, bl)
         hi = max(hi, bh)
-    thr_lo = percentile_threshold(df_agg["p_any"], lo)
-    thr_hi = percentile_threshold(df_agg["p_any"], hi)
-    cand = df_agg[(df_agg["p_any"] >= thr_lo) & (df_agg["p_any"] <= thr_hi)].copy()
-    return cand.sort_values("p_any", ascending=False)
-
+    # Percentiller expected üzerinden
+    thr_lo = np.quantile(df_agg["expected"].to_numpy(), lo)
+    thr_hi = np.quantile(df_agg["expected"].to_numpy(), hi)
+    cand = df_agg[(df_agg["expected"] >= thr_lo) & (df_agg["expected"] <= thr_hi)].copy()
+    return cand.sort_values("expected", ascending=False)
 
 def kmeans_like(coords: np.ndarray, weights: np.ndarray, k: int, iters: int = 20):
     n = len(coords)
@@ -201,14 +210,13 @@ def kmeans_like(coords: np.ndarray, weights: np.ndarray, k: int, iters: int = 20
                 centroids[c] = (coords[m] * w).sum(axis=0) / max(1e-6, w.sum())
     return centroids, assign
 
-
 def allocate_patrols(df_agg: pd.DataFrame, k: int, bands: List[str]) -> Dict:
     cand = choose_candidates(df_agg, bands)
     if cand.empty:
         return {"zones": []}
     merged = cand.merge(GEO_DF, on=KEY_COL)
     coords = merged[["centroid_lon", "centroid_lat"]].to_numpy()
-    weights = merged["p_any"].to_numpy()
+    weights = merged["expected"].to_numpy()  # <-- burada expected
     k = min(k, max(1, len(merged) // 3))
     cents, assign = kmeans_like(coords, weights, k)
     zones = []
@@ -224,12 +232,14 @@ def allocate_patrols(df_agg: pd.DataFrame, k: int, bands: List[str]) -> Dict:
         zones.append({
             "id": f"Z{z+1}",
             "centroid": {"lat": float(cz[1]), "lon": float(cz[0])},
-            "cells": sub[KEY_COL].astype(str).tolist(),   # örn. KEY_COL = "geoid"
+            "cells": sub[KEY_COL].astype(str).tolist(),
             "route": route,
-            "expected_risk": float(sub["p_any"].mean()),
+            "expected_risk": float(sub["expected"].mean()),  # raporlamada expected
         })
     return {"zones": zones}
 
+def color_for_tier(tier: str) -> str:
+    return {"Yüksek": "#d62728", "Orta": "#ff7f0e", "Hafif": "#1f77b4"}.get(tier, "#1f77b4")
 
 def color_for_percentile(p: float) -> str:
     if p >= 0.9: return "#b30000"
@@ -244,10 +254,12 @@ def build_map(df_agg: pd.DataFrame, patrol: Dict | None = None) -> folium.Map:
     if KEY_COL not in df_agg.columns:
         st.warning(f"Harita için '{KEY_COL}' kolonu bulunamadı. Lütfen 'Tahmin et' butonuna basın.")
         return folium.Map(location=[37.7749, -122.4194], zoom_start=12, tiles="cartodbpositron")
-    values = df_agg["p_any"].to_numpy()
+    values = df_agg["expected"].to_numpy()
     for feat in GEO_FEATURES:
         gid = feat["properties"]["id"]  # = geoid
         row = df_agg[df_agg[KEY_COL] == gid]
+        expected = float(row["expected"].iloc[0])
+        tier = row["tier"].iloc[0]
         if row.empty:
             continue
         p  = float(row["p_any"].iloc[0])
@@ -257,12 +269,17 @@ def build_map(df_agg: pd.DataFrame, patrol: Dict | None = None) -> folium.Map:
         top_html = "".join([f"<li>{t}: {v:.2f}</li>" for t, v in top3])
         popup_html = f"""
         <b>{gid}</b><br/>
-        p_any: {p:.2f} (q10={q10:.2f}, q90={q90:.2f})<br/>
+        E[olay] (ufuk): {expected:.2f}<br/>
         <b>En olası 3 tip</b>
         <ul style='margin-left:12px'>{top_html}</ul>
-        <i>Seçili ufuk için ortalama risk</i>
+        <i>Belirsizlik (saatlik ort.): q10={q10:.2f}, q90={q90:.2f}</i>
         """
-        style = {"fillColor": color_for_percentile(p), "color": "#666666", "weight": 0.5, "fillOpacity": 0.6}
+        style = {
+            "fillColor": color_for_tier(tier),
+            "color": "#666666",
+            "weight": 0.5,
+            "fillOpacity": 0.6,
+        }
         folium.GeoJson(data=feat,
                        style_function=lambda _x, s=style: s,
                        tooltip=folium.Tooltip(f"{gid} — risk {p:.2f}"),
@@ -270,7 +287,7 @@ def build_map(df_agg: pd.DataFrame, patrol: Dict | None = None) -> folium.Map:
                        ).add_to(m)
     
     thr99 = np.quantile(values, 0.99)
-    urgent = df_agg[df_agg["p_any"] >= thr99]
+    urgent = df_agg[df_agg["expected"] >= thr99]
     for _, r in urgent.iterrows():
         lat = GEO_DF.loc[GEO_DF[KEY_COL] == r[KEY_COL], "centroid_lat"].values[0]
         lon = GEO_DF.loc[GEO_DF[KEY_COL] == r[KEY_COL], "centroid_lon"].values[0]
@@ -345,31 +362,26 @@ with col1:
 
 with col2:
     st.subheader("KPI")
-    if st.session_state.get("agg") is not None:
+    if st.session_state["agg"] is not None:
         a = st.session_state["agg"]
-        f = st.session_state.get("forecast", pd.DataFrame())
+        kpi_expected = round(float(a["expected"].sum()), 2)
+        high = int((a["tier"] == "Yüksek").sum())
+        mid  = int((a["tier"] == "Orta").sum())
+        low  = int((a["tier"] == "Hafif").sum())
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("Beklenen olay (ufuk)", kpi_expected)
+        c2.metric("Yüksek öncelik", high)
+        c3.metric("Öncelik", mid)
+        c4.metric("Düşük", low)
     
-        # Ufka göre toplam beklenen olay (∑ saat/gün × ∑ hücre)
-        if "ts" in f.columns:                    # 24s / 48s → saatlik
-            expected_total = float(f["p_any"].sum())
-            horizon_label = "ufuk toplamı (saatlik)"
-        elif "date" in f.columns:                # 7g → günlük mean → 24 ile çarp
-            expected_total = float((f["p_any"] * 24).sum())
-            horizon_label = "ufuk toplamı (günlük≈24×mean)"
-        else:
-            expected_total = float("nan")
-            horizon_label = "ufuk toplamı"
-    
-        kpi_expected = round(expected_total, 2)
-        kpi_urgent   = int((a["p_any"] >= np.quantile(a["p_any"], 0.99)).sum())
-        kpi_cells    = int(len(a))
-    
-        c1, c2, c3 = st.columns(3)
-        c1.metric(f"Beklenen olay ({horizon_label})", kpi_expected)
-        c2.metric("Acil bölge (>%99)", kpi_urgent)
-        c3.metric("Hücre sayısı", kpi_cells)
+        with st.expander("Öncelik kümeleri – geoid listeleri"):
+            cc1, cc2, cc3 = st.columns(3)
+            cc1.write(", ".join(a.loc[a["tier"]=="Yüksek", KEY_COL].astype(str).tolist()) or "—")
+            cc2.write(", ".join(a.loc[a["tier"]=="Orta",   KEY_COL].astype(str).tolist()) or "—")
+            cc3.write(", ".join(a.loc[a["tier"]=="Hafif",  KEY_COL].astype(str).tolist()) or "—")
     
     st.subheader("En riskli bölgeler")
+    st.dataframe(top_risky_table(st.session_state["agg"]))
     if st.session_state["agg"] is not None:
         st.dataframe(top_risky_table(st.session_state["agg"]))
     
