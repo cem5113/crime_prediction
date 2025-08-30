@@ -545,7 +545,11 @@ cell_minutes = st.sidebar.number_input("Hücre başına ort. kontrol (dk)", min_
 colA, colB = st.sidebar.columns(2)
 btn_predict = colA.button("Tahmin et")
 btn_patrol  = colB.button("Devriye öner", disabled=st.session_state.get("agg") is None)
-show_popups = st.sidebar.checkbox("Hücre pop-up (Top 3 suç)", value=True)
+show_popups = st.sidebar.checkbox(
+    "Hücre popup'larını (en olası 3 suç) göster",
+    value=True,
+    help="Harita hücresine tıklayınca beklenen dağılıma göre ilk 3 suç tipini gösterir."
+)
 
 st.sidebar.caption("• Tahmin et: seçtiğin aralık için riskleri hesaplar.  • Devriye öner: K ekip ve görev süresine göre kümeler/rota üretir.")
 
@@ -584,15 +588,9 @@ with col1:
     agg = st.session_state.get("agg")
 
     if agg is not None:
-        show_popups = st.checkbox(
-            "Hücre popup'larını (en olası 3 suç) göster",
-            value=True,
-            help="Kapatırsanız harita biraz daha hızlı çalışır."
-        )
-
         m = build_map_fast(
             agg,
-            show_popups=show_popups,
+            show_popups=show_popups,        
             patrol=st.session_state.get("patrol")
         )
         st_folium(m, width=None, height=620)
