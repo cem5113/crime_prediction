@@ -345,16 +345,30 @@ with col1:
 
 with col2:
     st.subheader("KPI")
-    if st.session_state["agg"] is not None:
+    if st.session_state.get("agg") is not None:
         a = st.session_state["agg"]
-        kpi_expected = round(float(a["p_any"].sum()), 2)
-        kpi_urgent = int((a["p_any"] >= np.quantile(a["p_any"], 0.99)).sum())
-        kpi_cells = int(len(a))
+        f = st.session_state.get("forecast", pd.DataFrame())
+    
+        # Ufka göre toplam beklenen olay (∑ saat/gün × ∑ hücre)
+        if "ts" in f.columns:                    # 24s / 48s → saatlik
+            expected_total = float(f["p_any"].sum())
+            horizon_label = "ufuk toplamı (saatlik)"
+        elif "date" in f.columns:                # 7g → günlük mean → 24 ile çarp
+            expected_total = float((f["p_any"] * 24).sum())
+            horizon_label = "ufuk toplamı (günlük≈24×mean)"
+        else:
+            expected_total = float("nan")
+            horizon_label = "ufuk toplamı"
+    
+        kpi_expected = round(expected_total, 2)
+        kpi_urgent   = int((a["p_any"] >= np.quantile(a["p_any"], 0.99)).sum())
+        kpi_cells    = int(len(a))
+    
         c1, c2, c3 = st.columns(3)
-        c1.metric("Beklenen olay (toplam)", kpi_expected)
+        c1.metric(f"Beklenen olay ({horizon_label})", kpi_expected)
         c2.metric("Acil bölge (>%99)", kpi_urgent)
         c3.metric("Hücre sayısı", kpi_cells)
-
+    
     st.subheader("En riskli bölgeler")
     if st.session_state["agg"] is not None:
         st.dataframe(top_risky_table(st.session_state["agg"]))
