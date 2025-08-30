@@ -10,6 +10,7 @@ import streamlit as st
 import folium
 from streamlit_folium import st_folium
 import json
+import altair as alt
 from pathlib import Path
 
 # =============================
@@ -790,8 +791,31 @@ with col1:
                 st.markdown(f"  - {t}")
             
             # 3) (İsterseniz) kısa çubuk grafik: katkılar
-            contrib_df = pd.DataFrame({"katkı (λ)": ex["contribs"]}).sort_values("katkı (λ)")
-            st.bar_chart(contrib_df)
+            contrib_df = (
+                pd.Series(ex["contribs"], name="lambda")
+                  .reset_index()
+                  .rename(columns={"index": "Bileşen"})
+            )
+            
+            chart = (
+                alt.Chart(contrib_df)
+                .mark_bar()
+                .encode(
+                    y=alt.Y("Bileşen:N", sort="-x", title=None),
+                    x=alt.X("lambda:Q", title="Katkı (λ)"),
+                    tooltip=["Bileşen:N", alt.Tooltip("lambda:Q", format=".2f", title="Katkı (λ)")]
+                )
+                .properties(height=220)
+            )
+            
+            # İsteğe bağlı: üstüne değer etiketi
+            labels = (
+                alt.Chart(contrib_df)
+                .mark_text(align="left", dx=4)
+                .encode(y="Bileşen:N", x="lambda:Q", text=alt.Text("lambda:Q", format=".2f"))
+            )
+            
+            st.altair_chart(chart + labels, use_container_width=True)
             
             # 4) Radyo anonsu – kopyalanabilir tek cümle
             lead1 = ex["top_types"][0][0] if ex["top_types"] else "-"
