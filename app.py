@@ -58,7 +58,13 @@ def load_geoid_layer(path="data/sf_cells.geojson", key_field=KEY_COL):
     rows, feats_out = [], []
     for feat in gj.get("features", []):
         props = feat.get("properties", {})
-        geoid = str(props.get(key_field, "")).strip()
+        geoid = str(
+            props.get(key_field)
+            or props.get(key_field.upper())
+            or props.get("GEOID")
+            or props.get("geoid")
+            or ""
+        ).strip()
         if not geoid:
             continue
         lon = props.get("centroid_lon"); lat = props.get("centroid_lat")
@@ -258,46 +264,69 @@ def kmeans_like(coords: np.ndarray, weights: np.ndarray, k: int, iters: int = 20
                 centroids[c] = (coords[m] * w).sum(axis=0) / max(1e-6, w.sum())
     return centroids, assign
 
-def allocate_patrols(df_agg: pd.DataFrame) -> Dict:
+# >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+# YENİ: K ve görev süresiyle devriye planlama
+def allocate_patrols(
+    df_agg: pd.DataFrame,
+    k_planned: int,
+    duty_minutes: int,
+    cell_minutes: int = 6,
+    travel_overhead: float = 0.40,
+) -> Dict:
     """
-    K'yi otomatik seçer; adaylar = Yüksek + Orta hücreler.
-    Heuristik: k ≈ ceil(sqrt(n/2)), 1..20 aralığına sıkıştırılır.
+    k_planned: planlanan ekip sayısı
+    duty_minutes: her ekibin sahada geçireceği süre (dk)
+    cell_minutes: 1 hücrede ort. kontrol süresi (dk)
+    travel_overhead: % seyir/aktarma payı (0.40 = %40)
     """
+    # Adaylar = Yüksek + Orta
     cand = df_agg[df_agg["tier"].isin(["Yüksek", "Orta"])].copy()
     if cand.empty:
         return {"zones": []}
-
-    # İhtiyaten çok kalabalık kümeyi kırpmak istersen:
-    cand = cand.sort_values("expected", ascending=False).head(100).copy()
 
     merged  = cand.merge(GEO_DF, on=KEY_COL)
     coords  = merged[["centroid_lon", "centroid_lat"]].to_numpy()
     weights = merged["expected"].to_numpy()
 
-    n = len(merged)
-    k_auto = int(np.ceil(np.sqrt(max(1, n) / 2)))
-    k_auto = max(1, min(20, k_auto))
+    k = max(1, min(int(k_planned), 50))
+    cents, assign = kmeans_like(coords, weights, k)
 
-    cents, assign = kmeans_like(coords, weights, k_auto)
+    # Hücre kapasitesi (adet) ~ görev süresi / (hücre_süresi * (1+overhead))
+    cap_cells = max(1, int(duty_minutes / (cell_minutes * (1.0 + travel_overhead))))
 
     zones = []
     for z in range(len(cents)):
         m = assign == z
         if not np.any(m):
             continue
-        sub = merged[m].copy()
+        sub = merged[m].copy().sort_values("expected", ascending=False)
+
+        # kapasite kadar en riskli hücreyi al
+        sub_planned = sub.head(cap_cells).copy()
+
         cz = cents[z]
-        angles = np.arctan2(sub["centroid_lat"] - cz[1], sub["centroid_lon"] - cz[0])
-        sub = sub.assign(angle=angles).sort_values("angle")
-        route = sub[["centroid_lat", "centroid_lon"]].to_numpy().tolist()
+        # rotayı açıya göre sırala
+        angles = np.arctan2(sub_planned["centroid_lat"] - cz[1], sub_planned["centroid_lon"] - cz[0])
+        sub_planned = sub_planned.assign(angle=angles).sort_values("angle")
+
+        route = sub_planned[["centroid_lat", "centroid_lon"]].to_numpy().tolist()
+        n_cells = len(sub_planned)
+        eta_minutes = int(round(n_cells * cell_minutes * (1.0 + travel_overhead)))
+        util = min(100, int(round(100 * eta_minutes / max(1, duty_minutes))))
+
         zones.append({
             "id": f"Z{z+1}",
             "centroid": {"lat": float(cz[1]), "lon": float(cz[0])},
-            "cells": sub[KEY_COL].astype(str).tolist(),
+            "cells": sub_planned[KEY_COL].astype(str).tolist(),
             "route": route,
-            "expected_risk": float(sub["expected"].mean()),
+            "expected_risk": float(sub_planned["expected"].mean()),
+            "planned_cells": int(n_cells),
+            "eta_minutes": int(eta_minutes),
+            "utilization_pct": int(util),
+            "capacity_cells": int(cap_cells),
         })
     return {"zones": zones}
+# <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
 
 def color_for_tier(tier: str) -> str:
     return {"Yüksek": "#d62728", "Orta": "#ff7f0e", "Hafif": "#1f77b4"}.get(tier, "#1f77b4")
@@ -376,7 +405,7 @@ def build_map(df_agg: pd.DataFrame, patrol: Dict | None = None) -> folium.Map:
 
     return m
 
-def build_map_fast(df_agg: pd.DataFrame, show_popups: bool = False) -> folium.Map:
+def build_map_fast(df_agg: pd.DataFrame, show_popups: bool = False, patrol: Dict | None = None) -> folium.Map:
     m = folium.Map(location=[37.7749, -122.4194], zoom_start=12, tiles="cartodbpositron")
     if df_agg is None or df_agg.empty:
         return m
@@ -407,6 +436,17 @@ def build_map_fast(df_agg: pd.DataFrame, show_popups: bool = False) -> folium.Ma
             popup=None if not show_popups else folium.Popup("ACİL — üst %1 E[olay]", max_width=150)
         ).add_to(m)
 
+    # Devriye rotaları (hızlı haritada da çiz)
+    if patrol and patrol.get("zones"):
+        for z in patrol["zones"]:
+            folium.PolyLine(z["route"], tooltip=f"{z['id']} rota").add_to(m)
+            folium.Marker(
+                [z["centroid"]["lat"], z["centroid"]["lon"]],
+                icon=folium.DivIcon(
+                    html=f"<div style='background:#111;color:#fff;padding:2px 6px;border-radius:6px'> {z['id']} </div>"
+                ),
+            ).add_to(m)
+
     return m
 
 # =============================
@@ -428,12 +468,18 @@ start_h, end_h = st.sidebar.slider(
     min_value=0, max_value=max_h, value=(0, max_h), step=step
 )
 
+st.sidebar.divider()
+st.sidebar.subheader("Devriye Parametreleri")
+K_planned = st.sidebar.number_input("Planlanan devriye sayısı (K)", min_value=1, max_value=50, value=6, step=1)
+duty_minutes = st.sidebar.number_input("Devriye görev süresi (dk)", min_value=15, max_value=600, value=120, step=15)
+cell_minutes = st.sidebar.number_input("Hücre başına ort. kontrol (dk)", min_value=2, max_value=30, value=6, step=1)
+
 # Devriye butonu (K/band yok)
 colA, colB = st.sidebar.columns(2)
 btn_predict = colA.button("Tahmin et")
 btn_patrol  = colB.button("Devriye öner", disabled=st.session_state.get("agg") is None)
 
-st.sidebar.caption("• Tahmin et: seçtiğin aralık için riskleri hesaplar.  • Devriye öner: Yüksek+Orta hücrelerden otomatik küme/rota üretir.")
+st.sidebar.caption("• Tahmin et: seçtiğin aralık için riskleri hesaplar.  • Devriye öner: K ekip ve görev süresine göre kümeler/rota üretir.")
 
 # =============================
 # STATE
@@ -456,23 +502,18 @@ with col1:
             + timedelta(hours=SF_TZ_OFFSET + start_h)
         ).replace(minute=0, second=0, microsecond=0)
         horizon_h = max(1, end_h - start_h)
-        scenario = {}
 
-        if ufuk in ("24s", "48s"):
-            horizon = 24 if ufuk == "24s" else 48
-        else:
-            horizon = 7 * 24  # 7g için saat bazında topluyoruz
-        
-        agg = aggregate_fast(start.isoformat(), horizon)
+        start_iso = start_dt.isoformat()
+        agg = aggregate_fast(start_iso, horizon_h)
 
-        st.session_state["forecast"] = df
+        # eski "df" artık yok; forecast'ı boş geçiyoruz
+        st.session_state["forecast"] = None
         st.session_state["agg"] = agg
         st.session_state["patrol"] = None
 
     agg = st.session_state["agg"]
-    if agg is not None:
-        m = build_map_fast(agg, show_popups=False)
-        st_folium(m, width=None, height=620)
+    m = build_map_fast(agg, show_popups=False, patrol=st.session_state.get("patrol"))
+    st_folium(m, width=None, height=620)
 
 with col2:
     st.subheader("KPI")
@@ -484,9 +525,7 @@ with col2:
         low  = int((a["tier"] == "Hafif").sum())
         c1, c2, c3, c4 = st.columns(4)
         c1.metric("Beklenen olay (ufuk)", kpi_expected)
-        c2.metric("Yüksek öncelik", high)
-        c3.metric("Öncelik", mid)
-        c4.metric("Düşük", low)
+        c2.metric("Yüksek", high); c3.metric("Orta", mid); c4.metric("Düşük", low)
 
         with st.expander("Öncelik kümeleri — geoid listeleri"):
             cc1, cc2, cc3 = st.columns(3)
@@ -500,12 +539,24 @@ with col2:
 
     st.subheader("Devriye özeti")
     if st.session_state.get("agg") is not None and btn_patrol:
-        st.session_state["patrol"] = allocate_patrols(st.session_state["agg"])
+        st.session_state["patrol"] = allocate_patrols(
+            st.session_state["agg"],
+            k_planned=K_planned,
+            duty_minutes=int(duty_minutes),
+            cell_minutes=int(cell_minutes),
+            travel_overhead=0.40,
+        )
 
     patrol = st.session_state.get("patrol")
-    if patrol:
-        rows = [{"zone": z["id"], "cells": len(z["cells"]),
-                 "avg_risk(E[olay])": round(z["expected_risk"], 2)} for z in patrol.get("zones", [])]
+    if patrol and patrol.get("zones"):
+        rows = [{
+            "zone": z["id"],
+            "cells_planned": z["planned_cells"],
+            "capacity_cells": z["capacity_cells"],
+            "eta_minutes": z["eta_minutes"],
+            "utilization_%": z["utilization_pct"],
+            "avg_risk(E[olay])": round(z["expected_risk"], 2),
+        } for z in patrol["zones"]]
         st.dataframe(pd.DataFrame(rows))
 
     st.subheader("Dışa aktar")
