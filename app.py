@@ -410,8 +410,42 @@ def build_map_fast(df_agg: pd.DataFrame, show_popups: bool = False, patrol: Dict
     if df_agg is None or df_agg.empty:
         return m
 
+    # Görselleştirme renkleri
     color_map = {r[KEY_COL]: color_for_tier(r["tier"]) for _, r in df_agg.iterrows()}
-    fc = {"type": "FeatureCollection", "features": GEO_FEATURES}
+
+    # Veri sözlüğü (popup için hızlı erişim)
+    data_map = df_agg.set_index(KEY_COL).to_dict(orient="index")
+
+    # GEOJSON’u popup içeriğiyle zenginleştir
+    features = []
+    for feat in GEO_FEATURES:
+        # derin kopya (global objeyi kirletmeyelim)
+        f = json.loads(json.dumps(feat))
+        gid = f["properties"].get("id")
+
+        row = data_map.get(gid)
+        if row:
+            expected = float(row["expected"])
+            tier     = str(row["tier"])
+            q10      = float(row["q10"])
+            q90      = float(row["q90"])
+            types    = {t: float(row[t]) for t in CRIME_TYPES}
+            top3     = sorted(types.items(), key=lambda x: x[1], reverse=True)[:3]
+            top_html = "".join([f"<li>{t}: {v:.2f}</li>" for t, v in top3])
+
+            popup_html = (
+                f"<b>{gid}</b><br/>"
+                f"E[olay] (ufuk): {expected:.2f} &nbsp;•&nbsp; Öncelik: <b>{tier}</b><br/>"
+                f"<b>En olası 3 tip</b>"
+                f"<ul style='margin-left:12px'>{top_html}</ul>"
+                f"<i>Belirsizlik (saatlik ort.): q10={q10:.2f}, q90={q90:.2f}</i>"
+            )
+            f["properties"]["popup_html"] = popup_html
+            f["properties"]["expected"]   = round(expected, 2)
+            f["properties"]["tier"]       = tier
+        features.append(f)
+
+    fc = {"type": "FeatureCollection", "features": features}
 
     def style_fn(feat):
         gid = feat["properties"].get("id")
@@ -422,10 +456,25 @@ def build_map_fast(df_agg: pd.DataFrame, show_popups: bool = False, patrol: Dict
             "fillOpacity": 0.55,
         }
 
-    gj = folium.GeoJson(fc, style_function=style_fn)
-    gj.add_to(m)
-    folium.GeoJsonTooltip(fields=[], aliases=[], sticky=False).add_to(gj)
+    # Tooltip + Popup (opsiyonel)
+    tooltip = folium.GeoJsonTooltip(
+        fields=["id", "tier", "expected"],
+        aliases=["GEOID", "Öncelik", "E[olay]"],
+        localize=True,
+        sticky=False,
+    ) if show_popups else None
 
+    popup = folium.GeoJsonPopup(
+        fields=["popup_html"],
+        labels=False,
+        parse_html=False,
+        max_width=280,
+    ) if show_popups else None
+
+    gj = folium.GeoJson(fc, style_function=style_fn, tooltip=tooltip, popup=popup)
+    gj.add_to(m)
+
+    # En yüksek %1 beklenen olaya kırmızı uyarı
     thr99 = np.quantile(df_agg["expected"].to_numpy(), 0.99)
     urgent = df_agg[df_agg["expected"] >= thr99]
     merged = urgent.merge(GEO_DF[[KEY_COL, "centroid_lat", "centroid_lon"]], on=KEY_COL)
@@ -436,7 +485,7 @@ def build_map_fast(df_agg: pd.DataFrame, show_popups: bool = False, patrol: Dict
             popup=None if not show_popups else folium.Popup("ACİL — üst %1 E[olay]", max_width=150)
         ).add_to(m)
 
-    # Devriye rotaları (hızlı haritada da çiz)
+    # Devriye rotaları
     if patrol and patrol.get("zones"):
         for z in patrol["zones"]:
             folium.PolyLine(z["route"], tooltip=f"{z['id']} rota").add_to(m)
@@ -514,7 +563,8 @@ with col1:
     agg = st.session_state["agg"]
     m = build_map_fast(agg, show_popups=False, patrol=st.session_state.get("patrol"))
     st_folium(m, width=None, height=620)
-
+    m = build_map_fast(agg, show_popups=True, patrol=st.session_state.get("patrol"))
+    
 with col2:
     st.subheader("KPI")
     if st.session_state["agg"] is not None:
