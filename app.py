@@ -28,6 +28,7 @@ GRID_STEPS = 14
 CRIME_TYPES = ["assault", "burglary", "theft", "robbery", "vandalism"]
 RISK_BANDS = {"Yüksek": (0.90, 1.00), "Orta": (0.70, 0.90), "Hafif": (0.50, 0.70)}
 KEY_COL = "geoid"
+CACHE_VERSION = "geo-v1"
 
 rng = np.random.default_rng(42)
 
@@ -89,6 +90,8 @@ def load_geoid_layer_cached(path, key_field=KEY_COL):
     return load_geoid_layer(path, key_field)
 
 GEO_DF, GEO_FEATURES = load_geoid_layer_cached("data/sf_cells.geojson", key_field=KEY_COL)
+if GEO_DF.empty:
+    st.error("GEOJSON yüklendi ama satır gelmedi. 'data/sf_cells.geojson' içinde 'properties.geoid' eksik olabilir.")
 
 def scenario_multipliers(scenario: Dict) -> float:
     mult = 1.0
@@ -141,16 +144,25 @@ def daily_forecast(start: datetime, days: int, scenario: Dict) -> pd.DataFrame:
     return daily
     
 @st.cache_data(show_spinner=False)
-def hourly_forecast_cached(start_iso: str, horizon_h: int, scenario: Dict) -> pd.DataFrame:
+def hourly_forecast_cached(start_iso: str, horizon_h: int, scenario: Dict, _v=CACHE_VERSION):
     start = datetime.fromisoformat(start_iso)
     return hourly_forecast(start, horizon_h, scenario)
 
 @st.cache_data(show_spinner=False)
-def daily_forecast_cached(start_iso: str, days: int, scenario: Dict) -> pd.DataFrame:
+def daily_forecast_cached(start_iso: str, days: int, scenario: Dict, _v=CACHE_VERSION):
     start = datetime.fromisoformat(start_iso)
     return daily_forecast(start, days, scenario)
 
 def aggregate_for_view(df: pd.DataFrame) -> pd.DataFrame:
+    # Eski sonuçlardan gelme 'cell_id' varsa otomatik düzelt
+    if KEY_COL not in df.columns and "cell_id" in df.columns:
+        df = df.rename(columns={"cell_id": KEY_COL})
+
+    # Hatalı/boş veri guard
+    if KEY_COL not in df.columns:
+        st.error(f"Tahmin çıktısında '{KEY_COL}' kolonu yok. Mevcut kolonlar: {list(df.columns)}")
+        return pd.DataFrame(columns=[KEY_COL, "p_any", "q10", "q90"] + CRIME_TYPES)
+
     agg_map = {"p_any": "mean", "q10": "mean", "q90": "mean"}
     agg_map.update({t: "mean" for t in CRIME_TYPES})
     return df.groupby(KEY_COL, as_index=False).agg(agg_map)
@@ -238,6 +250,9 @@ def color_for_percentile(p: float) -> str:
 
 def build_map(df_agg: pd.DataFrame, patrol: Dict | None = None) -> folium.Map:
     m = folium.Map(location=[37.7749, -122.4194], zoom_start=12, tiles="cartodbpositron")
+    if KEY_COL not in df_agg.columns:
+        st.warning(f"Harita için '{KEY_COL}' kolonu bulunamadı. Lütfen 'Tahmin et' butonuna basın.")
+        return folium.Map(location=[37.7749, -122.4194], zoom_start=12, tiles="cartodbpositron")
     values = df_agg["p_any"].to_numpy()
     for feat in GEO_FEATURES:
         gid = feat["properties"]["id"]  # = geoid
