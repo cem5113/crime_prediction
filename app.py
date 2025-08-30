@@ -849,19 +849,21 @@ if sekme == "Operasyon":
                 m,
                 width=None,
                 height=540,
-                returned_objects=["last_object_clicked", "last_clicked"]  # 0.21.x
+                returned_objects=["last_active_drawing", "last_object_clicked", "last_clicked"]
             )
                 
-            # tıklanan hücre GEOID'ini yakala
             clicked_gid = None
             if ret:
-                # 1) GeoJSON özelliğinden dene
+                # 1) GeoJSON/çizim objesinden dene
                 obj = ret.get("last_object_clicked") or ret.get("last_active_drawing")
                 if isinstance(obj, dict):
-                    props = (obj.get("properties")
-                             or obj.get("feature", {}).get("properties", {})
-                             or {})
-                    clicked_gid = props.get("id") or props.get(KEY_COL)
+                    # Bazı sürümlerde id kök seviyede gelir
+                    clicked_gid = str(obj.get("id") or "") or None
+                    if not clicked_gid:
+                        props = (obj.get("properties")
+                                 or obj.get("feature", {}).get("properties", {})
+                                 or {})
+                        clicked_gid = props.get("id") or props.get(KEY_COL) or props.get("GEOID")
             
                 # 2) Olmazsa yalnız koordinattan en yakın hücre
                 if not clicked_gid:
@@ -869,7 +871,7 @@ if sekme == "Operasyon":
                     if latlon:
                         lat, lon = latlon
                         clicked_gid = nearest_geoid(lat, lon)
-    
+
             # açıklama için gerekli zaman bilgisi
             start_iso  = st.session_state.get("start_iso")
             horizon_h  = st.session_state.get("horizon_h")
