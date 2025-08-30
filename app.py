@@ -145,18 +145,23 @@ def daily_forecast_cached(start_iso: str, days: int, scenario: Dict, _v=CACHE_VE
     return daily_forecast(start, days, scenario)
 
 def aggregate_for_view(df: pd.DataFrame) -> pd.DataFrame:
-    # Ortalama belirsizlik göstergeleri (popup için)
-    mean_map = {"p_any": "mean", "q10": "mean", "q90": "mean"}
-    # Ufuk boyunca beklenen olay sayıları (SUM) – asıl risk metrikleri
-    sum_map  = {"p_any": "sum"} | {t: "sum" for t in CRIME_TYPES}
+    df = df.copy()
+    # her saat için lambda (beklenen olay sayısı)
+    df["lam"] = p_to_lambda(df["p_any"])
+
+    # saatlik belirsizliği ortalama tutalım (popup için)
+    mean_map = {"q10": "mean", "q90": "mean"}
+
+    # ufuk boyunca beklenen toplam (λ toplama kuralıyla)
+    sum_map = {"lam": "sum"} | {t: "sum" for t in CRIME_TYPES}
 
     mean_part = df.groupby(KEY_COL, as_index=False).agg(mean_map)
     sum_part  = df.groupby(KEY_COL, as_index=False).agg(sum_map)
 
-    out = mean_part.drop(columns=["p_any"]).merge(sum_part, on=KEY_COL)
-    out = out.rename(columns={"p_any": "expected"})  # beklenen olay sayısı
+    out = mean_part.merge(sum_part, on=KEY_COL)
+    out = out.rename(columns={"lam": "expected"})  # beklenen olay sayısı (λ)
 
-    # Öncelik sınıfları (quantile eşikleri expected üzerinden)
+    # Öncelik sınıfları: expected üzerinden quantile
     q90 = out["expected"].quantile(0.90)
     q70 = out["expected"].quantile(0.70)
     out["tier"] = np.select(
@@ -167,17 +172,40 @@ def aggregate_for_view(df: pd.DataFrame) -> pd.DataFrame:
     return out
     
 def top_risky_table(df_agg: pd.DataFrame, n: int = 12) -> pd.DataFrame:
-    cols = [KEY_COL, "expected"] + CRIME_TYPES
-    tab = df_agg[cols].sort_values("expected", ascending=False).head(n).reset_index(drop=True)
-    tab["expected"] = tab["expected"].round(2)  # beklenen olay sayısı
+    tab = df_agg[[KEY_COL, "expected"] + CRIME_TYPES].sort_values(
+        "expected", ascending=False
+    ).head(n).reset_index(drop=True)
+
+    # Poisson’tan olasılıklar (λ = expected)
+    lam = tab["expected"].to_numpy()
+    tab["P(≥1)%"] = [round(prob_ge_k(l, 1) * 100, 1) for l in lam]
+    tab["P(≥2)%"] = [round(prob_ge_k(l, 2) * 100, 1) for l in lam]
+    tab["P(≥3)%"] = [round(prob_ge_k(l, 3) * 100, 1) for l in lam]
+
+    tab["expected"] = tab["expected"].round(2)
     for t in CRIME_TYPES:
         tab[t] = tab[t].round(3)
-    tab = tab.rename(columns={"expected": "E[olay]"})
-    return tab
+
+    return tab.rename(columns={"expected": "E[olay] (λ)"})
+
+# --- Poisson yardımcıları (p_any -> lambda ve olasılıklar) ---
+def p_to_lambda(p: pd.Series | np.ndarray) -> np.ndarray:
+    # p_any = 1 - e^{-λ}  =>  λ = -ln(1 - p)
+    p = np.clip(np.asarray(p, dtype=float), 0.0, 0.999999)
+    return -np.log(1.0 - p)
+
+def pois_cdf(k: int, lam: float) -> float:
+    s = 0.0
+    for i in range(k + 1):
+        s += (lam ** i) / math.factorial(i)
+    return math.exp(-lam) * s
+
+def prob_ge_k(lam: float, k: int) -> float:
+    # P(N >= k) = 1 - CDF(k-1; λ)
+    return 1.0 - pois_cdf(k - 1, lam)
 
 def percentile_threshold(series: pd.Series, p: float) -> float:
     return float(np.quantile(series.to_numpy(), p))
-
 
 def choose_candidates(df_agg: pd.DataFrame, bands: List[str]) -> pd.DataFrame:
     # bands = ["Yüksek", "Orta"] vs; percentiller RISK_BANDS sözlüğünden
@@ -274,10 +302,10 @@ def build_map(df_agg: pd.DataFrame, patrol: Dict | None = None) -> folium.Map:
             continue
 
         expected = float(row["expected"].iloc[0])
-        tier      = str(row["tier"].iloc[0])
-        q10       = float(row["q10"].iloc[0])
-        q90       = float(row["q90"].iloc[0])
-        types     = {t: float(row[t].iloc[0]) for t in CRIME_TYPES}
+        tier     = str(row["tier"].iloc[0])
+        q10      = float(row["q10"].iloc[0])
+        q90      = float(row["q90"].iloc[0])
+        types    = {t: float(row[t].iloc[0]) for t in CRIME_TYPES}
 
         top3 = sorted(types.items(), key=lambda x: x[1], reverse=True)[:3]
         top_html = "".join([f"<li>{t}: {v:.2f}</li>" for t, v in top3])
@@ -325,9 +353,11 @@ def build_map(df_agg: pd.DataFrame, patrol: Dict | None = None) -> folium.Map:
             folium.PolyLine(z["route"], tooltip=f"{z['id']} rota").add_to(m)
             folium.Marker(
                 [z["centroid"]["lat"], z["centroid"]["lon"]],
-                icon=folium.DivIcon(html="<div style='background:#111;color:#fff;padding:2px 6px;border-radius:6px'> "
-                                         f"{z['id']} </div>")
+                icon=folium.DivIcon(
+                    html=f"<div style='background:#111;color:#fff;padding:2px 6px;border-radius:6px'> {z['id']} </div>"
+                ),
             ).add_to(m)
+
     return m
     
 def _mark_auto_patrol():
