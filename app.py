@@ -408,6 +408,96 @@ def prob_ge_k(lam: float, k: int) -> float:
     # P(N >= k) = 1 - CDF(k-1; λ)
     return 1.0 - pois_cdf(k - 1, lam)
 
+# === Sonuç Kartı yardımcıları (EKLE: prob_ge_k biter bitmez) ===
+
+TR_LABEL = {
+    "assault":   "Saldırı",
+    "burglary":  "Konut/İşyeri Hırsızlığı",
+    "theft":     "Hırsızlık",
+    "robbery":   "Soygun",
+    "vandalism": "Vandalizm",
+}
+
+def pois_quantile(lam: float, q: float) -> int:
+    """Poisson q-kantili (scipy'siz basit hesap)."""
+    k = 0
+    while pois_cdf(k, lam) < q and k < 10_000:
+        k += 1
+    return k
+
+def pois_pi90(lam: float) -> tuple[int, int]:
+    """Poisson için yaklaşık %90 PI (5.–95. yüzdelikler)."""
+    lo = pois_quantile(lam, 0.05)
+    hi = pois_quantile(lam, 0.95)
+    return lo, hi
+
+def render_result_card(df_agg: pd.DataFrame, geoid: str, start_iso: str, horizon_h: int):
+    """Harita tıklaması/selection sonrası 'Sonuç Kartı'nı çizer."""
+    if df_agg is None or df_agg.empty or geoid is None:
+        st.info("Bölge seçilmedi.")
+        return
+    row = df_agg.loc[df_agg[KEY_COL] == geoid]
+    if row.empty:
+        st.info("Seçilen bölge için veri yok.")
+        return
+    row = row.iloc[0].to_dict()
+
+    # Tür bazında λ ve P(≥1)
+    type_lams = {t: float(row.get(t, 0.0)) for t in CRIME_TYPES}
+    type_probs = {TR_LABEL[t]: 1.0 - math.exp(-lam) for t, lam in type_lams.items()}
+    probs_sorted = sorted(type_probs.items(), key=lambda x: x[1], reverse=True)
+
+    # Top-2 öneri
+    top2 = [name for name, _ in probs_sorted[:2]]
+
+    # Tür bazlı 90% PI (Poisson)
+    pi90_lines = []
+    for name_tr, _p in probs_sorted[:2]:
+        t_eng = next(k for k, v in TR_LABEL.items() if v == name_tr)
+        lam = type_lams[t_eng]
+        lo, hi = pois_pi90(lam)
+        pi90_lines.append(f"{name_tr}: {lam:.1f} ({lo}–{hi})")
+
+    # Genel açıklama
+    ex = local_explain(df_agg, geoid, start_iso, horizon_h) or {}
+    win_text = risk_window_text(start_iso, horizon_h)
+    conf_txt = confidence_label(ex.get("q10", 0.0), ex.get("q90", 0.0))
+    tips = actionable_cues(ex.get("top_types", []))
+    drivers = ex.get("contribs", {})
+    if drivers:
+        total = sum(drivers.values()) or 1.0
+        drv_txt = ", ".join([f"{k} %{round(100*v/total)}" for k, v in drivers.items()])
+    else:
+        drv_txt = "—"
+
+    # === KART UI ===
+    st.markdown("### 🧭 Sonuç Kartı")
+    c1, c2, c3 = st.columns([1.0, 1.2, 1.2])
+    with c1:
+        st.metric("Bölge (GEOID)", geoid)
+        st.metric("Öncelik", str(row.get("tier", "—")))
+        st.metric("Ufuk", f"{horizon_h} saat")
+    with c2:
+        st.markdown("**Olasılıklar (P≥1, tür bazında)**")
+        for name_tr, p in probs_sorted:
+            st.write(f"- {name_tr}: {p:.2f}")
+    with c3:
+        st.markdown("**Beklenen sayılar (90% PI)**")
+        for line in pi90_lines:
+            st.write(f"- {line}")
+
+    st.markdown("---")
+    st.markdown(f"**Top-2 öneri:** {', '.join(top2) if top2 else '—'}")
+    st.markdown(
+        f"- **Risk penceresi:** {win_text}  \n"
+        f"- **Sürücüler:** {drv_txt}  \n"
+        f"- **Güven:** {conf_txt} (q10={ex.get('q10', 0):.2f}, q90={ex.get('q90', 0):.2f})"
+    )
+    if tips:
+        st.markdown("**Eylem önerileri:**")
+        for t in tips[:3]:
+            st.markdown(f"- {t}")
+
 # --- Görünüm için agregasyon ---
 def aggregate_for_view(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
@@ -948,75 +1038,14 @@ if sekme == "Operasyon":
                     }
         
             # --- SOLA (haritanın ALTINA) AÇIKLAMA PANELİ ---
-            st.markdown("### Açıklama (seçili hücre)")
             info = st.session_state.get("explain")
-            if info and info.get("data"):
-                geoid = info["geoid"]
-                ex = info["data"]
-        
-                c1, c2, c3 = st.columns(3)
-                c1.metric("Hücre", geoid)
-                c2.metric("E[olay] (λ)", f"{ex['expected']:.2f}")
-                c3.metric("Öncelik", ex["tier"])
-        
-                # 1) Öne çıkan suçlar
-                top_txt = ", ".join([f"{t} ({v:.2f}λ)" for t, v in ex["top_types"]])
-                st.caption("En olası 3 suç")
-                st.write(top_txt)
-                
-                # 2) Saha özeti (kolluk gözüyle)
-                win_text = risk_window_text(start_iso, horizon_h)
-                conf_txt = confidence_label(ex["q10"], ex["q90"])
-                total = sum(ex["contribs"].values()) or 1.0
-                drivers = ", ".join([f"{k} %{round(100*v/total)}" for k, v in ex["contribs"].items()])
-                tips = actionable_cues(ex["top_types"])
-                
-                st.markdown("#### Saha özeti")
-                st.markdown(
-                    f"- **Risk penceresi:** {win_text}\n"
-                    f"- **Sürücüler:** {drivers}\n"
-                    f"- **Güven:** {conf_txt} (q10={ex['q10']:.2f}, q90={ex['q90']:.2f})\n"
-                    f"- **Eylem önerileri:**"
-                )
-                for t in tips:
-                    st.markdown(f"  - {t}")
-                
-                # 3) Katkılar (Altair layer)
-                contrib_df = (
-                    pd.Series(ex["contribs"], name="lambda")
-                      .reset_index()
-                      .rename(columns={"index": "Bileşen"})
-                )
-                # emniyet: sayısal olsun
-                contrib_df["lambda"] = pd.to_numeric(contrib_df["lambda"], errors="coerce").fillna(0)
-                
-                bars = alt.Chart(contrib_df).mark_bar().encode(
-                    y=alt.Y("Bileşen:N", sort="-x", title=None),
-                    x=alt.X("lambda:Q", title="Katkı (λ)"),
-                    tooltip=["Bileşen:N", alt.Tooltip("lambda:Q", format=".2f", title="Katkı (λ)")],
-                ).properties(height=160)
-                
-                labels = alt.Chart(contrib_df).mark_text(align="left", dx=4).encode(
-                    y="Bileşen:N", x="lambda:Q", text=alt.Text("lambda:Q", format=".2f")
-                )
-                
-                layer = alt.layer(bars, labels, data=contrib_df)  # << kritik: data root'ta
-                st.altair_chart(layer, use_container_width=True)
-                            
-                # 4) Radyo anonsu – kopyalanabilir tek cümle
-                lead1 = ex["top_types"][0][0] if ex["top_types"] else "-"
-                lead2 = ex["top_types"][1][0] if len(ex["top_types"]) > 1 else "-"
-                first_tip = tips[0] if tips else "-"
-                st.caption("Radyo anonsu")
-                st.code(
-                    f"{geoid}: {win_text} aralığında risk **{ex['tier'].lower()}**. "
-                    f"Öncelik: {lead1}, {lead2}. E[olay]={ex['expected']:.1f} (güven {conf_txt}). "
-                    f"Ekip odak: {first_tip}.",
-                    language=None
-                )
-    
+            start_iso = st.session_state.get("start_iso")
+            horizon_h = st.session_state.get("horizon_h")
+            
+            if info and info.get("geoid") and start_iso and horizon_h:
+                render_result_card(st.session_state["agg"], info["geoid"], start_iso, horizon_h)
             else:
-                st.info("Haritada bir hücreye tıklarsanız açıklama burada görünecek.")
+                st.info("Haritada bir hücreye tıklayın veya listeden seçin; kart burada görünecek.")
         else:
             st.info("Önce ‘Tahmin et’ ile bir tahmin üretin.")
     
