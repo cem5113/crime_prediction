@@ -176,8 +176,12 @@ def render_result_card(df_agg: pd.DataFrame, geoid: str, start_iso: str, horizon
         return
     row = row.iloc[0].to_dict()
 
-    # Near-repeat (yakın tekrar) etkisi — satırdan oku, yoksa 0.0
+    # --- NEAR-REPEAT satırı (YENİ) ---
     nr = float(row.get("nr_boost", 0.0))
+    st.markdown(
+        f"- **Near-repeat etkisi:** {nr:.2f} (0=etki yok, 1=yüksek). "
+        "Taze olay çevresinde kısa ufukta risk artar."
+    )
 
     type_lams = {t: float(row.get(t, 0.0)) for t in CRIME_TYPES}
     type_probs = {TR_LABEL[t]: 1.0 - math.exp(-lam) for t, lam in type_lams.items()}
