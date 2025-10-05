@@ -12,7 +12,7 @@ from utils.constants import SF_TZ_OFFSET, KEY_COL
 from utils.geo import load_geoid_layer, resolve_clicked_gid
 from utils.forecast import precompute_base_intensity, aggregate_fast, prob_ge_k
 from utils.patrol import allocate_patrols
-from utils.ui import SMALL_UI_CSS, render_result_card, build_map_fast
+from utils.ui import SMALL_UI_CSS, render_result_card, build_map_fast, render_kpi_row
 from components.last_update import show_last_update_badge
 
 # ── Sayfa ayarı: Streamlit'te en üstte olmalı
@@ -110,19 +110,22 @@ if sekme == "Operasyon":
 
     with col2:
         st.subheader("Risk Özeti", anchor=False)
-        # Küçük puntolu alan: id='risk-ozet' ile sarılı
-        with st.container():
-            st.markdown("<div id='risk-ozet'>", unsafe_allow_html=True)
-            if st.session_state["agg"] is not None:
-                a = st.session_state["agg"]
-                kpi_expected = round(float(a["expected"].sum()), 2)
-                high = int((a["tier"] == "Yüksek").sum())
-                mid  = int((a["tier"] == "Orta").sum())
-                low  = int((a["tier"] == "Hafif").sum())
-                c1, c2, c3, c4 = st.columns(4)
-                c1.metric("Beklenen olay (ufuk)", kpi_expected)
-                c2.metric("Yüksek", high); c3.metric("Orta", mid); c4.metric("Düşük", low)
-            st.markdown("</div>", unsafe_allow_html=True)
+    
+        if st.session_state["agg"] is not None:
+            a = st.session_state["agg"]
+            kpi_expected = round(float(a["expected"].sum()), 2)
+            high = int((a["tier"] == "Yüksek").sum())
+            mid  = int((a["tier"] == "Orta").sum())
+            low  = int((a["tier"] == "Hafif").sum())
+    
+            render_kpi_row([
+                ("Beklenen olay (ufuk)", kpi_expected, "Seçili zaman ufkunda toplam beklenen olay sayısı"),
+                ("Yüksek",               high,         "Yüksek öncelikli hücre sayısı"),
+                ("Orta",                 mid,          "Orta öncelikli hücre sayısı"),
+                ("Düşük",                low,          "Düşük öncelikli hücre sayısı"),
+            ])
+        else:
+            st.info("Önce ‘Tahmin et’ ile bir tahmin üretin.")
 
         st.subheader("En riskli bölgeler")
         if st.session_state["agg"] is not None:
