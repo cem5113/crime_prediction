@@ -1,6 +1,6 @@
+# app.py
 from __future__ import annotations
-import os, json, time
-from pathlib import Path
+import time
 from datetime import datetime, timedelta
 
 import numpy as np
@@ -15,14 +15,13 @@ from utils.patrol import allocate_patrols
 from utils.ui import SMALL_UI_CSS, render_result_card, build_map_fast
 from components.last_update import show_last_update_badge
 
-# ── Sayfa ayarı: mutlaka en üstte olmalı
+# ── Sayfa ayarı: Streamlit'te en üstte olmalı
 st.set_page_config(page_title="SUTAM: Suç Tahmin Modeli", layout="wide")
 st.markdown(SMALL_UI_CSS, unsafe_allow_html=True)
 
-# ── Başlık ve Son Güncelleme Badge
+# ── Başlık ve "Son güncelleme" rozetini göster
 st.title("SUTAM: Suç Tahmin Modeli")
-last_updated_utc = datetime.utcnow()   # Örnek: şu anki UTC zamanı
-show_last_update_badge(last_updated_utc)
+show_last_update_badge(datetime.utcnow())  # örnek: UTC now
 
 # ── Geo katmanı
 GEO_DF, GEO_FEATURES = load_geoid_layer("data/sf_cells.geojson")
@@ -43,14 +42,17 @@ st.sidebar.divider()
 
 st.sidebar.header("Ayarlar")
 ufuk = st.sidebar.radio("Ufuk", options=["24s", "48s", "7g"], index=0, horizontal=True)
-max_h, step = (24,1) if ufuk=="24s" else (48,3) if ufuk=="48s" else (7*24,24)
-start_h, end_h = st.sidebar.slider("Zaman aralığı (şimdiden + saat)", min_value=0, max_value=max_h, value=(0, max_h), step=step)
+max_h, step = (24, 1) if ufuk == "24s" else (48, 3) if ufuk == "48s" else (7 * 24, 24)
+start_h, end_h = st.sidebar.slider(
+    "Zaman aralığı (şimdiden + saat)",
+    min_value=0, max_value=max_h, value=(0, max_h), step=step
+)
 
 st.sidebar.divider()
 st.sidebar.subheader("Devriye Parametreleri")
-K_planned   = st.sidebar.number_input("Planlanan devriye sayısı (K)", min_value=1, max_value=50, value=6, step=1)
-duty_minutes= st.sidebar.number_input("Devriye görev süresi (dk)", min_value=15, max_value=600, value=120, step=15)
-cell_minutes= st.sidebar.number_input("Hücre başına ort. kontrol (dk)", min_value=2, max_value=30, value=6, step=1)
+K_planned    = st.sidebar.number_input("Planlanan devriye sayısı (K)", min_value=1, max_value=50, value=6, step=1)
+duty_minutes = st.sidebar.number_input("Devriye görev süresi (dk)",   min_value=15, max_value=600, value=120, step=15)
+cell_minutes = st.sidebar.number_input("Hücre başına ort. kontrol (dk)", min_value=2, max_value=30, value=6, step=1)
 
 colA, colB = st.sidebar.columns(2)
 btn_predict = colA.button("Tahmin et")
@@ -59,7 +61,9 @@ show_popups = st.sidebar.checkbox("Hücre popup'larını (en olası 3 suç) gös
 
 # ── State
 if "agg" not in st.session_state:
-    st.session_state.update({"agg": None, "patrol": None, "start_iso": None, "horizon_h": None, "explain": None})
+    st.session_state.update({
+        "agg": None, "patrol": None, "start_iso": None, "horizon_h": None, "explain": None
+    })
 
 # ── Operasyon
 if sekme == "Operasyon":
@@ -69,23 +73,33 @@ if sekme == "Operasyon":
         st.caption(f"Son güncelleme (SF): {now_sf_iso()}")
 
         if btn_predict or st.session_state["agg"] is None:
-            start_dt = (datetime.utcnow() + timedelta(hours=SF_TZ_OFFSET + start_h)).replace(minute=0, second=0, microsecond=0)
+            start_dt  = (datetime.utcnow() + timedelta(hours=SF_TZ_OFFSET + start_h)).replace(minute=0, second=0, microsecond=0)
             horizon_h = max(1, end_h - start_h)
             start_iso = start_dt.isoformat()
 
             agg = aggregate_fast(start_iso, horizon_h, GEO_DF, BASE_INT)
-            st.session_state.update({"agg": agg, "patrol": None, "start_iso": start_iso, "horizon_h": horizon_h})
+            st.session_state.update({
+                "agg": agg, "patrol": None, "start_iso": start_iso, "horizon_h": horizon_h
+            })
 
         agg = st.session_state["agg"]
         if agg is not None:
-            m = build_map_fast(agg, GEO_FEATURES, GEO_DF, show_popups=show_popups, patrol=st.session_state.get("patrol"))
-            ret = st_folium(m, key="riskmap", height=540, returned_objects=["last_object_clicked", "last_clicked"])
+            m = build_map_fast(
+                agg, GEO_FEATURES, GEO_DF,
+                show_popups=show_popups,
+                patrol=st.session_state.get("patrol")
+            )
+            ret = st_folium(
+                m, key="riskmap", height=540,
+                returned_objects=["last_object_clicked", "last_clicked"]
+            )
             if ret:
                 gid, _ = resolve_clicked_gid(GEO_DF, ret)
                 if gid:
                     st.session_state["explain"] = {"geoid": gid}
 
-            start_iso = st.session_state["start_iso"]; horizon_h = st.session_state["horizon_h"]
+            start_iso  = st.session_state["start_iso"]
+            horizon_h  = st.session_state["horizon_h"]
             info = st.session_state.get("explain")
             if info and info.get("geoid"):
                 render_result_card(agg, info["geoid"], start_iso, horizon_h)
@@ -96,6 +110,7 @@ if sekme == "Operasyon":
 
     with col2:
         st.subheader("Risk Özeti", anchor=False)
+        # Küçük puntolu alan: id='risk-ozet' ile sarılı
         with st.container():
             st.markdown("<div id='risk-ozet'>", unsafe_allow_html=True)
             if st.session_state["agg"] is not None:
@@ -112,7 +127,11 @@ if sekme == "Operasyon":
         st.subheader("En riskli bölgeler")
         if st.session_state["agg"] is not None:
             def top_risky_table(df_agg: pd.DataFrame, n: int = 12) -> pd.DataFrame:
-                tab = df_agg[[KEY_COL, "expected"]].copy().sort_values("expected", ascending=False).head(n).reset_index(drop=True)
+                tab = (
+                    df_agg[[KEY_COL, "expected"]]
+                    .sort_values("expected", ascending=False)
+                    .head(n).reset_index(drop=True)
+                )
                 lam = tab["expected"].to_numpy()
                 tab["P(≥1)%"] = [round(prob_ge_k(l, 1) * 100, 1) for l in lam]
                 tab["E[olay] (λ)"] = tab["expected"].round(2)
@@ -131,17 +150,25 @@ if sekme == "Operasyon":
         patrol = st.session_state.get("patrol")
         if patrol and patrol.get("zones"):
             rows = [{
-                "zone": z["id"], "cells_planned": z["planned_cells"],
-                "capacity_cells": z["capacity_cells"], "eta_minutes": z["eta_minutes"],
-                "utilization_%": z["utilization_pct"], "avg_risk(E[olay])": round(z["expected_risk"], 2),
+                "zone": z["id"],
+                "cells_planned": z["planned_cells"],
+                "capacity_cells": z["capacity_cells"],
+                "eta_minutes": z["eta_minutes"],
+                "utilization_%": z["utilization_pct"],
+                "avg_risk(E[olay])": round(z["expected_risk"], 2),
             } for z in patrol["zones"]]
             st.dataframe(pd.DataFrame(rows), use_container_width=True, height=260)
 
         st.subheader("Dışa aktar")
         if st.session_state["agg"] is not None:
             csv = st.session_state["agg"].to_csv(index=False).encode("utf-8")
-            st.download_button("CSV indir", data=csv, file_name=f"risk_export_{int(time.time())}.csv", mime="text/csv")
+            st.download_button(
+                "CSV indir", data=csv,
+                file_name=f"risk_export_{int(time.time())}.csv",
+                mime="text/csv"
+            )
 
+# ── Raporlar
 else:
     st.header("Raporlar")
     st.info("Rapor sekmesi, mevcut koddan benzer şekilde taşınabilir.")
