@@ -1,36 +1,62 @@
 # utils/forecast.py
 from __future__ import annotations
 import math
+from datetime import datetime
+
 import numpy as np
 import pandas as pd
-from datetime import datetime
+
 from utils.constants import CRIME_TYPES, KEY_COL
 
-def p_to_lambda_array(p: np.ndarray) -> np.ndarray:
-    p = np.clip(p, 0.0, 0.999999)
-    return -np.log1p(-p)
 
+# -------------------- Baz yoğunluk: normalize edilmiş --------------------
 def precompute_base_intensity(geo_df: pd.DataFrame) -> np.ndarray:
+    """
+    Hücre bazlı mekânsal yoğunluk (0..1 aralığına normalize).
+    Doygunluğa girmemesi için min-max normalizasyonu uygulanır.
+    """
     lon = geo_df["centroid_lon"].to_numpy()
     lat = geo_df["centroid_lat"].to_numpy()
+
     peak1 = np.exp(-(((lon + 122.41) ** 2) / 0.0008 + ((lat - 37.78) ** 2) / 0.0005))
     peak2 = np.exp(-(((lon + 122.42) ** 2) / 0.0006 + ((lat - 37.76) ** 2) / 0.0006))
-    noise = 0.07
-    return 0.2 + 0.8 * (peak1 + peak2) + noise
+    raw = 0.2 + 0.8 * (peak1 + peak2) + 0.07  # önceki formül
 
-def aggregate_fast(start_iso: str, horizon_h: int, geo_df: pd.DataFrame, base_int: np.ndarray) -> pd.DataFrame:
+    raw = raw - raw.min()
+    base = raw / (raw.max() + 1e-9)          # 0..1
+    return base
+
+
+# -------------------- Hızlı agregasyon: λ’yı doğrudan kur --------------------
+def aggregate_fast(
+    start_iso: str,
+    horizon_h: int,
+    geo_df: pd.DataFrame,
+    base_int: np.ndarray,
+    *,
+    k_lambda: float = 0.12,   # saatlik ölçek (gerekirse 0.08–0.15 arası ayarlayın)
+) -> pd.DataFrame:
+    """
+    Saatlik λ = k_lambda * base_int * diurnal
+    Beklenen toplam = saatlik λ’ların toplamı.
+    q10/q90 belirsizlikleri saatlik P(>=1)’in kantilleriyle hesaplanır.
+    """
     start = datetime.fromisoformat(start_iso)
     hours = np.arange(horizon_h)
     diurnal = 1.0 + 0.4 * np.sin((((start.hour + hours) % 24 - 18) / 24) * 2 * np.pi)
 
-    p = np.clip(base_int[:, None] * diurnal[None, :], 0, 1)
-    p_any = np.clip(0.05 + 0.5 * p, 0, 0.98)
+    # Saatlik λ (doygunluk yapma). Emniyet için üst sınır koyduk.
+    lam_hour = np.clip(k_lambda * base_int[:, None] * diurnal[None, :], 0.0, 0.9)
 
-    lam = p_to_lambda_array(p_any)
-    expected = lam.sum(axis=1)
-    q10 = np.maximum(0.0, p_any - 0.08).mean(axis=1)
-    q90 = np.minimum(1.0, p_any + 0.08).mean(axis=1)
+    # Toplam beklenen olay (λ’ların toplamı)
+    expected = lam_hour.sum(axis=1)
 
+    # Saatlik P(>=1) = 1 - e^{-λ}; belirsizlik için kantiller
+    p_hour = 1.0 - np.exp(-lam_hour)
+    q10 = np.quantile(p_hour, 0.10, axis=1)
+    q90 = np.quantile(p_hour, 0.90, axis=1)
+
+    # Tür kırılımı
     rng = np.random.default_rng(42)
     alpha = np.array([1.5, 1.2, 2.0, 1.0, 1.3])
     W = rng.dirichlet(alpha, size=len(geo_df))
@@ -45,6 +71,7 @@ def aggregate_fast(start_iso: str, horizon_h: int, geo_df: pd.DataFrame, base_in
         "robbery": robbery, "vandalism": vandalism,
     })
 
+    # Öncelik sınıfları
     q90_thr = out["expected"].quantile(0.90)
     q70_thr = out["expected"].quantile(0.70)
     out["tier"] = np.select(
@@ -53,7 +80,12 @@ def aggregate_fast(start_iso: str, horizon_h: int, geo_df: pd.DataFrame, base_in
     )
     return out
 
-# --- Poisson yardımcıları (kart için) ---
+
+# -------------------- Poisson yardımcıları (kart/tablolar için) --------------------
+def p_to_lambda_array(p: np.ndarray) -> np.ndarray:
+    p = np.clip(p, 0.0, 0.999999)
+    return -np.log1p(-p)
+
 def p_to_lambda(p):
     p = np.clip(np.asarray(p, dtype=float), 0.0, 0.999999)
     return -np.log(1.0 - p)
