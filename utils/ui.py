@@ -64,11 +64,20 @@ input, textarea { font-size: .80rem !important; }
 #risk-ozet [data-testid="stMetric"]      { padding: .04rem 0 .01rem 0; }
 
 /* === Tablo/DataFrame (başlık + gövde aynı boy) === */
-[data-testid="stDataFrame"] { font-size: .76rem; }
-[data-testid="stDataFrame"] thead, 
-[data-testid="stDataFrame"] th,
-[data-testid="stDataFrame"] td { font-size: .76rem; }
+[data-testid="stDataFrame"] { font-size: .70rem; }
 
+/* hem başlık hem gövdeyi eşitle + satır/padding’i daralt */
+[data-testid="stDataFrame"] thead,
+[data-testid="stDataFrame"] th,
+[data-testid="stDataFrame"] td {
+  font-size: .70rem;
+  line-height: 1.15;
+  padding-top: 4px;
+  padding-bottom: 4px;
+}
+
+/* tablo araç çubuğu (indir vb.) bir tık küçült */
+[data-testid="stElementToolbar"] button { transform: scale(.90); }
 /* === Expander başlıkları === */
 .st-expanderHeader, [data-baseweb="accordion"] { font-size: .80rem; }
 
