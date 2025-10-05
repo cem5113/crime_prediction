@@ -12,53 +12,67 @@ import streamlit as st
 from utils.constants import KEY_COL, CRIME_TYPES
 from utils.forecast import pois_pi90
 
-# ────────────────────────── CSS (Daha küçük tipografi) ─────────────────────────
+# ────────────────────────────── KÜÇÜK VE TUTARLI TİPOGRAFİ ──────────────────────────────
 SMALL_UI_CSS = """
 <style>
-/* GENEL: küçültülmüş font */
+/* === GENEL: tüm yazılar küçük, satır aralığı dar === */
 html, body, [class*="css"] { font-size: 12px; line-height: 1.28; }
 
-/* Başlıklar */
-h1 { font-size: 1.8rem; line-height: 1.2; margin: .5rem 0 .4rem 0; }
-h2 { font-size: 0.95rem; margin: .25rem 0; }
-h3 { font-size: 0.88rem; margin: .20rem 0; }
+/* === Başlıklar (yalnızca H1 büyük) === */
+h1 { font-size: 1.9rem; line-height: 1.2; margin: .45rem 0 .35rem 0; }
+h2 { font-size: .95rem;  margin: .25rem 0; }
+h3 { font-size: .88rem;  margin: .18rem 0; }
 
-/* İç boşluklar */
-section.main > div.block-container { padding-top: .6rem; padding-bottom: .1rem; }
+/* === İç boşlukları sıkılaştır === */
+section.main > div.block-container { padding-top: .55rem; padding-bottom: .10rem; }
 [data-testid="stSidebar"] .block-container { padding-top: .25rem; padding-bottom: .25rem; }
-div.element-container { margin-bottom: .25rem; }
+div.element-container { margin-bottom: .22rem; }
 
-/* Metric kartları */
-[data-testid="stMetricValue"] { font-size: 0.95rem; }
-[data-testid="stMetricLabel"] { font-size: .68rem; color: #666; }
-[data-testid="stMetric"]      { padding: .1rem 0 .02rem 0; }
+/* === Form/label/yardım metinleri === */
+label, .stMarkdown p, .stCaption, .stText, .stRadio, .stSelectbox, .stNumberInput { font-size: .82rem; }
+small, .stCaption, .st-emotion-cache-1wbqy5l { font-size: .74rem; }
 
-/* Risk Özeti özel küçültme */
-#risk-ozet [data-testid="stMetricValue"] { font-size: 0.90rem; line-height: 1.0; }
-#risk-ozet [data-testid="stMetricLabel"] { font-size: 0.64rem; color: #6b7280; }
-#risk-ozet [data-testid="stMetric"]      { padding: .05rem 0 .01rem 0; }
+/* === Butonlar === */
+.stButton > button,
+.stDownloadButton > button {
+  font-size: .80rem;
+  padding: 4px 10px;
+  border-radius: 8px;
+}
 
-/* DataFrame */
-[data-testid="stDataFrame"] { font-size: .75rem; }
+/* === Slider & input içerikleri === */
+[data-testid="stSlider"] { padding-top: .10rem; padding-bottom: .05rem; }
+input, textarea { font-size: .80rem !important; }
 
-/* Form etiketleri */
-[data-testid="stNumberInput"] label,
-[data-testid="stSlider"] label,
-[role="radiogroup"] label { font-size: .78rem; }
+/* === Metric kartları === */
+[data-testid="stMetricValue"] { font-size: .95rem; }
+[data-testid="stMetricLabel"] { font-size: .68rem; color:#666; }
+[data-testid="stMetric"]      { padding: .06rem 0 .02rem 0; }
 
-/* Expander başlıkları */
+/* Risk Özeti bloğu (bir tık daha küçük) */
+#risk-ozet [data-testid="stMetricValue"] { font-size: .90rem; line-height: 1.0; }
+#risk-ozet [data-testid="stMetricLabel"] { font-size: .64rem; color:#6b7280; }
+#risk-ozet [data-testid="stMetric"]      { padding: .04rem 0 .01rem 0; }
+
+/* === Tablo/DataFrame (başlık + gövde aynı boy) === */
+[data-testid="stDataFrame"] { font-size: .76rem; }
+[data-testid="stDataFrame"] thead, 
+[data-testid="stDataFrame"] th,
+[data-testid="stDataFrame"] td { font-size: .76rem; }
+
+/* === Expander başlıkları === */
 .st-expanderHeader, [data-baseweb="accordion"] { font-size: .80rem; }
 
-/* Radio/checkbox */
-.stRadio > label, .stCheckbox > label { margin-bottom: .10rem; }
+/* === Radio/checkbox aralıklarını daralt === */
+.stRadio > label, .stCheckbox > label { margin-bottom: .08rem; }
 
-/* Üst menü/footer gizle */
+/* === Üst menü/footer (isteğe bağlı) === */
 #MainMenu { visibility: hidden; }
 footer { visibility: hidden; }
 </style>
 """
 
-# --- Çeviriler ---
+# --- çeviri eşleştirmeleri ---
 TR_LABEL = {
     "assault":   "Saldırı",
     "burglary":  "Konut/İşyeri Hırsızlığı",
@@ -73,8 +87,6 @@ CUE_MAP = {
     "burglary":  ["arka sokak & yükleme kapıları", "kapanış sonrası işyerleri"],
     "vandalism": ["okul/park/altgeçit", "inşaat sahası kontrolü"],
 }
-
-# (geri kalan fonksiyonlar aynı - render_result_card, build_map_fast vs.)
 
 def actionable_cues(top_types: list[tuple[str, float]], max_items: int = 3) -> list[str]:
     tips: list[str] = []
@@ -161,16 +173,10 @@ def render_result_card(df_agg: pd.DataFrame, geoid: str, start_iso: str, horizon
 def color_for_tier(tier: str) -> str:
     return {"Yüksek": "#d62728", "Orta": "#ff7f0e", "Hafif": "#1f77b4"}.get(tier, "#1f77b4")
 
-def build_map_fast(
-    df_agg: pd.DataFrame,
-    geo_features: list,
-    geo_df: pd.DataFrame,
-    show_popups: bool = False,
-    patrol: Dict | None = None
-) -> folium.Map:
+def build_map_fast(df_agg: pd.DataFrame, geo_features: list, geo_df: pd.DataFrame,
+                   show_popups: bool = False, patrol: Dict | None = None) -> folium.Map:
     m = folium.Map(location=[37.7749, -122.4194], zoom_start=12, tiles="cartodbpositron")
-    if df_agg is None or df_agg.empty:
-        return m
+    if df_agg is None or df_agg.empty: return m
 
     color_map = {r[KEY_COL]: color_for_tier(r["tier"]) for _, r in df_agg.iterrows()}
     data_map = df_agg.set_index(KEY_COL).to_dict(orient="index")
@@ -197,25 +203,19 @@ def build_map_fast(
         features.append(f)
 
     fc = {"type": "FeatureCollection", "features": features}
-
     def style_fn(feat):
         gid = feat["properties"].get("id")
-        return {
-            "fillColor": color_map.get(gid, "#9ecae1"),
-            "color": "#666666",
-            "weight": 0.3,
-            "fillOpacity": 0.55,
-        }
+        return {"fillColor": color_map.get(gid, "#9ecae1"), "color": "#666666", "weight": 0.3, "fillOpacity": 0.55}
 
     tooltip = folium.GeoJsonTooltip(
         fields=["id", "tier", "expected"],
         aliases=["GEOID", "Öncelik", "E[olay]"],
-        localize=True,
-        sticky=False,
+        localize=True, sticky=False
     ) if show_popups else None
 
     popup = folium.GeoJsonPopup(
-        fields=["popup_html"], labels=False, parse_html=False, max_width=280
+        fields=["popup_html"],
+        labels=False, parse_html=False, max_width=280
     ) if show_popups else None
 
     folium.GeoJson(fc, style_function=style_fn, tooltip=tooltip, popup=popup).add_to(m)
@@ -231,15 +231,12 @@ def build_map_fast(
             radius=5, color="#000", fill=True, fill_color="#ff0000"
         ).add_to(m)
 
-    # Devriye rotaları
     if patrol and patrol.get("zones"):
         for z in patrol["zones"]:
             folium.PolyLine(z["route"], tooltip=f"{z['id']} rota").add_to(m)
             folium.Marker(
                 [z["centroid"]["lat"], z["centroid"]["lon"]],
-                icon=folium.DivIcon(
-                    html=f"<div style='background:#111;color:#fff;padding:2px 6px;border-radius:6px'> {z['id']} </div>"
-                ),
+                icon=folium.DivIcon(html="<div style='background:#111;color:#fff;padding:2px 6px;border-radius:6px'>"
+                                         f" {z['id']} </div>")
             ).add_to(m)
-
     return m
