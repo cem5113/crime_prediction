@@ -82,9 +82,10 @@ if sekme == "Operasyon":
             # tahmin sırasında:
             agg = aggregate_fast(
                 start_iso, horizon_h, GEO_DF, BASE_INT,
-                events=events_df,            # ← eklendi
-                near_repeat_alpha=0.35       # ← hassasiyet düğmesi gibi düşün
+                events=events_df,        # ← artık destekleniyor
+                near_repeat_alpha=0.35   # ← 0.0 kapatır; 0.2–0.5 arası öneri
             )
+            
             st.session_state.update({
                 "agg": agg, "patrol": None, "start_iso": start_iso, "horizon_h": horizon_h
             })
