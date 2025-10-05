@@ -14,6 +14,7 @@ from utils.forecast import precompute_base_intensity, aggregate_fast, prob_ge_k
 from utils.patrol import allocate_patrols
 from utils.ui import SMALL_UI_CSS, render_result_card, build_map_fast, render_kpi_row
 from components.last_update import show_last_update_badge
+from utils.reports import load_events
 
 # ── Sayfa ayarı: Streamlit'te en üstte olmalı
 st.set_page_config(page_title="SUTAM: Suç Tahmin Modeli", layout="wide")
@@ -76,7 +77,14 @@ if sekme == "Operasyon":
             horizon_h = max(1, end_h - start_h)
             start_iso = start_dt.isoformat()
 
-            agg = aggregate_fast(start_iso, horizon_h, GEO_DF, BASE_INT)
+            events_df = load_events("data/events.csv")  # ts parsed=True ve lat/lon kolonu olmalı
+            
+            # tahmin sırasında:
+            agg = aggregate_fast(
+                start_iso, horizon_h, GEO_DF, BASE_INT,
+                events=events_df,            # ← eklendi
+                near_repeat_alpha=0.35       # ← hassasiyet düğmesi gibi düşün
+            )
             st.session_state.update({
                 "agg": agg, "patrol": None, "start_iso": start_iso, "horizon_h": horizon_h
             })
