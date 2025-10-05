@@ -84,13 +84,16 @@ if sekme == "Operasyon":
             horizon_h = max(1, end_h - start_h)
             start_iso = start_dt.isoformat()
 
-            events_df = load_events("data/events.csv")  # ts parsed=True ve lat/lon kolonu olmalı
+            events_df = load_events("data/events.csv")  # ts, lat, lon kolonları olmalı
             
-            # tahmin sırasında:
+            # Tahmin (near-repeat parametreleri ile)
             agg = aggregate_fast(
                 start_iso, horizon_h, GEO_DF, BASE_INT,
-                events=events_df,        # ← artık destekleniyor
-                near_repeat_alpha=0.35   # ← 0.0 kapatır; 0.2–0.5 arası öneri
+                events=events_df,        # ← NR için olaylar
+                near_repeat_alpha=0.35,  # ← katkı gücü (0.0 kapatır; 0.2–0.5 arası deneyebilirsin)
+                nr_lookback_h=24,        # ← geçmişe bakış (saat)
+                nr_radius_m=400,         # ← mekânsal yarıçap (metre)
+                nr_decay_h=12.0,         # ← zamansal sönüm (saat)
             )
             
             st.session_state.update({
@@ -145,15 +148,29 @@ if sekme == "Operasyon":
         st.subheader("En riskli bölgeler")
         if st.session_state["agg"] is not None:
             def top_risky_table(df_agg: pd.DataFrame, n: int = 12) -> pd.DataFrame:
+                cols = [KEY_COL, "expected"]
+                if "nr_boost" in df_agg.columns:
+                    cols.append("nr_boost")  # NR varsa tabloya al
+            
                 tab = (
-                    df_agg[[KEY_COL, "expected"]]
+                    df_agg[cols]
                     .sort_values("expected", ascending=False)
                     .head(n).reset_index(drop=True)
                 )
+            
                 lam = tab["expected"].to_numpy()
                 tab["P(≥1)%"] = [round(prob_ge_k(l, 1) * 100, 1) for l in lam]
+            
+                if "nr_boost" in tab.columns:
+                    tab["NR"] = tab["nr_boost"].round(2)
+            
                 tab["E[olay] (λ)"] = tab["expected"].round(2)
-                return tab.drop(columns=["expected"])
+            
+                drop_cols = ["expected"]
+                if "nr_boost" in tab.columns:
+                    drop_cols.append("nr_boost")
+                return tab.drop(columns=drop_cols)
+
             st.dataframe(top_risky_table(st.session_state["agg"]), use_container_width=True, height=300)
 
         st.subheader("Devriye özeti")
