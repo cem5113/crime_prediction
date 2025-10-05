@@ -12,55 +12,53 @@ import streamlit as st
 from utils.constants import KEY_COL, CRIME_TYPES
 from utils.forecast import pois_pi90
 
-# ────────────────────────── CSS (Küçük tipografi + sıkı boşluklar) ─────────────────────────
+# ────────────────────────── CSS (Daha küçük tipografi) ─────────────────────────
 SMALL_UI_CSS = """
 <style>
-/* GENEL: bir tık daha küçük font ve daha sıkı dikey boşluk */
-html, body, [class*="css"] { font-size: 13px; line-height: 1.32; }
+/* GENEL: küçültülmüş font */
+html, body, [class*="css"] { font-size: 12px; line-height: 1.28; }
 
-/* Başlıklar (yalnızca H1 büyük) */
-h1 { font-size: 1.9rem; line-height: 1.25; margin: .55rem 0 .45rem 0; }
-h2 { font-size: 1.02rem; margin: .30rem 0; }
-h3 { font-size: 0.92rem; margin: .25rem 0; }
+/* Başlıklar */
+h1 { font-size: 1.8rem; line-height: 1.2; margin: .5rem 0 .4rem 0; }
+h2 { font-size: 0.95rem; margin: .25rem 0; }
+h3 { font-size: 0.88rem; margin: .20rem 0; }
 
-/* Ana içerik ve sidebar iç boşlukları */
-section.main > div.block-container { padding-top: .75rem; padding-bottom: .15rem; }
-[data-testid="stSidebar"] .block-container { padding-top: .35rem; padding-bottom: .35rem; }
+/* İç boşluklar */
+section.main > div.block-container { padding-top: .6rem; padding-bottom: .1rem; }
+[data-testid="stSidebar"] .block-container { padding-top: .25rem; padding-bottom: .25rem; }
+div.element-container { margin-bottom: .25rem; }
 
-/* Elemanlar arası dikey boşluğu sıkılaştır */
-div.element-container { margin-bottom: .35rem; }
+/* Metric kartları */
+[data-testid="stMetricValue"] { font-size: 0.95rem; }
+[data-testid="stMetricLabel"] { font-size: .68rem; color: #666; }
+[data-testid="stMetric"]      { padding: .1rem 0 .02rem 0; }
 
-/* Metric kartları (genel) */
-[data-testid="stMetricValue"] { font-size: 1.05rem; }
-[data-testid="stMetricLabel"] { font-size: .72rem; color: #666; }
-[data-testid="stMetric"]      { padding: .15rem 0 .05rem 0; }
+/* Risk Özeti özel küçültme */
+#risk-ozet [data-testid="stMetricValue"] { font-size: 0.90rem; line-height: 1.0; }
+#risk-ozet [data-testid="stMetricLabel"] { font-size: 0.64rem; color: #6b7280; }
+#risk-ozet [data-testid="stMetric"]      { padding: .05rem 0 .01rem 0; }
 
-/* Sadece Risk Özeti bloğu daha da küçük */
-#risk-ozet [data-testid="stMetricValue"] { font-size: 0.98rem; line-height: 1.05; }
-#risk-ozet [data-testid="stMetricLabel"] { font-size: 0.68rem; color: #6b7280; }
-#risk-ozet [data-testid="stMetric"]      { padding: .08rem 0 .02rem 0; }
+/* DataFrame */
+[data-testid="stDataFrame"] { font-size: .75rem; }
 
-/* DataFrame ve tablo metinleri */
-[data-testid="stDataFrame"] { font-size: .80rem; }
-
-/* Form/ayar etiketleri */
+/* Form etiketleri */
 [data-testid="stNumberInput"] label,
 [data-testid="stSlider"] label,
-[role="radiogroup"] label { font-size: .82rem; }
+[role="radiogroup"] label { font-size: .78rem; }
 
 /* Expander başlıkları */
-.st-expanderHeader, [data-baseweb="accordion"] { font-size: .84rem; }
+.st-expanderHeader, [data-baseweb="accordion"] { font-size: .80rem; }
 
-/* Radio/checkbox hizaları biraz sıkı */
-.stRadio > label, .stCheckbox > label { margin-bottom: .15rem; }
+/* Radio/checkbox */
+.stRadio > label, .stCheckbox > label { margin-bottom: .10rem; }
 
-/* (opsiyonel) üst menü/footer gizle */
+/* Üst menü/footer gizle */
 #MainMenu { visibility: hidden; }
 footer { visibility: hidden; }
 </style>
 """
 
-# Çeviri haritası ve eylem ipuçları
+# --- Çeviriler ---
 TR_LABEL = {
     "assault":   "Saldırı",
     "burglary":  "Konut/İşyeri Hırsızlığı",
@@ -75,6 +73,8 @@ CUE_MAP = {
     "burglary":  ["arka sokak & yükleme kapıları", "kapanış sonrası işyerleri"],
     "vandalism": ["okul/park/altgeçit", "inşaat sahası kontrolü"],
 }
+
+# (geri kalan fonksiyonlar aynı - render_result_card, build_map_fast vs.)
 
 def actionable_cues(top_types: list[tuple[str, float]], max_items: int = 3) -> list[str]:
     tips: list[str] = []
