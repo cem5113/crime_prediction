@@ -14,6 +14,13 @@ from pathlib import Path
 import streamlit as st
 import altair as alt
 
+with open("last_update.json") as f:
+    ts_str = json.load(f)["last_update_utc"]
+last_updated_utc = datetime.fromisoformat(ts_str)
+show_last_update_badge(last_updated_utc)
+
+# SAYFA AYARLARI 
+st.set_page_config(page_title="SUTAM: Suç Tahmin Modeli", layout="wide")
 # SAYFA AYARLARI 
 st.set_page_config(page_title="SUTAM: Suç Tahmin Modeli", layout="wide")
 
