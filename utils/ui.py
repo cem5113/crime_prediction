@@ -176,14 +176,16 @@ def render_result_card(df_agg: pd.DataFrame, geoid: str, start_iso: str, horizon
         return
     row = row.iloc[0].to_dict()
 
-    # ← YENİ: Near-repeat değeri (aggregate_fast 'nr_boost' sütunu üretmeli)
+    # Near-repeat (varsa)
     nr = float(row.get("nr_boost", 0.0))
 
+    # Tür bazında λ ve P(≥1)
     type_lams = {t: float(row.get(t, 0.0)) for t in CRIME_TYPES}
-    type_probs = {TR_LABEL[t]: 1.0 - math.exp(-lam) for t, lam in type_lams.items()}
+    type_probs = {TR_LABEL.get(t, t): 1.0 - math.exp(-lam) for t, lam in type_lams.items()}
     probs_sorted = sorted(type_probs.items(), key=lambda x: x[1], reverse=True)
 
-    top2 = [name for name, _ in probs_sorted[:2]]
+    # İlk iki tür için 90% PI metni (kartta küçük özet)
+    from utils.forecast import pois_pi90
     pi90_lines = []
     for name_tr, _p in probs_sorted[:2]:
         t_eng = next(k for k, v in TR_LABEL.items() if v == name_tr)
@@ -191,34 +193,57 @@ def render_result_card(df_agg: pd.DataFrame, geoid: str, start_iso: str, horizon
         lo, hi = pois_pi90(lam)
         pi90_lines.append(f"{name_tr}: {lam:.1f} ({lo}–{hi})")
 
+    # Güven ve saat penceresi
     q10 = float(row.get("q10", 0.0)); q90 = float(row.get("q90", 0.0))
     conf_txt = confidence_label(q10, q90)
     win_text = risk_window_text(start_iso, horizon_h)
 
+    # Kart başlığı
     st.markdown("### 🧭 Sonuç Kartı")
     c1, c2, c3 = st.columns([1.0, 1.2, 1.2])
     with c1:
         st.metric("Bölge (GEOID)", geoid)
         st.metric("Öncelik", str(row.get("tier", "—")))
         st.metric("Ufuk", f"{horizon_h} saat")
+
+    # En olası suç türleri + P(≥1)
     with c2:
-        st.markdown("**Olasılıklar (P≥1, tür bazında)**")
-        for name_tr, p in probs_sorted:
+        st.markdown("**En olası suç türleri (P≥1)**")
+        for name_tr, p in probs_sorted[:5]:
             st.write(f"- {name_tr}: {p:.2f}")
+
+    # Beklenen sayılar (90% PI) – ilk iki tür
     with c3:
         st.markdown("**Beklenen sayılar (90% PI)**")
         for line in pi90_lines:
             st.write(f"- {line}")
+
     st.markdown("---")
-    st.markdown(f"**Top-2 öneri:** {', '.join(top2) if top2 else '—'}")
 
-    # ← YENİ: Kart altına NR bilgisi (tek yerde göster)
-    st.markdown(
-        f"- **Near-repeat etkisi:** {nr:.2f} (0=etki yok, 1=yüksek). "
-        "Taze olay çevresinde kısa ufukta risk artar."
-    )
+    # Kolluğa öneriler (top-2’ye göre pratik ipuçları)
+    try:
+        top_types_eng = []
+        for name_tr, _ in probs_sorted[:2]:
+            # TR→ENG geri çözüm
+            t_eng = next(k for k, v in TR_LABEL.items() if v == name_tr)
+            top_types_eng.append((t_eng, type_lams[t_eng]))
+        cues = actionable_cues(top_types_eng, max_items=3)
+    except Exception:
+        cues = []
 
-    st.markdown(f"- **Risk penceresi:** {win_text}  \n- **Güven:** {conf_txt} (q10={q10:.2f}, q90={q90:.2f})")
+    if nr > 0:
+        st.markdown(
+            f"- **Near-repeat etkisi:** {nr:.2f} (0=etki yok, 1=yüksek). "
+            "Taze olay çevresinde kısa vadede risk artar."
+        )
+
+    st.markdown(f"- **Risk penceresi:** {win_text}")
+    st.markdown(f"- **Güven:** {conf_txt} (q10={q10:.2f}, q90={q90:.2f})")
+
+    if cues:
+        st.markdown("**Kolluğa öneriler:**")
+        for c in cues:
+            st.write(f"- {c}")
 
 # ───────────── Harita ─────────────
 def color_for_tier(tier: str) -> str:
