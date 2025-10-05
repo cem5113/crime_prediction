@@ -1092,7 +1092,7 @@ if sekme == "Operasyon":
             st.info("Önce ‘Tahmin et’ ile bir tahmin üretin.")
     
     with col2:
-        st.subheader("KPI")
+        st.subheader("Risk Özeti")
         if st.session_state["agg"] is not None:
             a = st.session_state["agg"]
             kpi_expected = round(float(a["expected"].sum()), 2)
