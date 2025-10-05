@@ -14,6 +14,12 @@ from utils.forecast import precompute_base_intensity, aggregate_fast, prob_ge_k
 from utils.patrol import allocate_patrols
 from utils.ui import SMALL_UI_CSS, show_last_update_badge, render_result_card, build_map_fast
 
+from components.last_update import show_last_update_badge
+
+# ... st.set_page_config + CSS sonrasında:
+st.title("SUTAM: Suç Tahmin Modeli")  
+show_last_update_badge(last_updated_utc)  
+
 # ── Sayfa ayarı
 st.set_page_config(page_title="SUTAM: Suç Tahmin Modeli", layout="wide")
 st.markdown(SMALL_UI_CSS, unsafe_allow_html=True)
