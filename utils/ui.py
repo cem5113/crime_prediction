@@ -8,44 +8,51 @@ import numpy as np
 import pandas as pd
 import folium
 import streamlit as st
-from zoneinfo import ZoneInfo
 
 from utils.constants import KEY_COL, CRIME_TYPES
 from utils.forecast import pois_pi90
-# ────────────────────────── CSS (TÜM yazılar küçük, sadece H1 büyük) ─────────────────────────
+
+# ────────────────────────── CSS (Küçük tipografi + sıkı boşluklar) ─────────────────────────
 SMALL_UI_CSS = """
 <style>
-/* GENEL: daha küçük font */
-html, body, [class*="css"] { font-size: 14px; }
+/* GENEL: bir tık daha küçük font ve daha sıkı dikey boşluk */
+html, body, [class*="css"] { font-size: 13px; line-height: 1.32; }
 
-/* Başlıklar */
-h1 { font-size: 1.9rem; line-height: 1.25; margin: .6rem 0 .6rem 0; } /* Uygulama adı BÜYÜK kalsın */
-h2 { font-size: 1.10rem; margin: .35rem 0; }
-h3 { font-size: 0.98rem;  margin: .30rem 0; }
+/* Başlıklar (yalnızca H1 büyük) */
+h1 { font-size: 1.9rem; line-height: 1.25; margin: .55rem 0 .45rem 0; }
+h2 { font-size: 1.02rem; margin: .30rem 0; }
+h3 { font-size: 0.92rem; margin: .25rem 0; }
 
-/* İç boşluklar */
-section.main > div.block-container { padding-top: 1.0rem; padding-bottom: .25rem; }
-[data-testid="stSidebar"] .block-container { padding-top: .5rem; padding-bottom: .5rem; }
+/* Ana içerik ve sidebar iç boşlukları */
+section.main > div.block-container { padding-top: .75rem; padding-bottom: .15rem; }
+[data-testid="stSidebar"] .block-container { padding-top: .35rem; padding-bottom: .35rem; }
 
-/* Metric kartları (GENEL küçük) */
-[data-testid="stMetricValue"] { font-size: 1.15rem; }
-[data-testid="stMetricLabel"] { font-size: .78rem; color: #666; }
+/* Elemanlar arası dikey boşluğu sıkılaştır */
+div.element-container { margin-bottom: .35rem; }
 
-/* Dataframe yazısı */
-[data-testid="stDataFrame"] { font-size: .84rem; }
+/* Metric kartları (genel) */
+[data-testid="stMetricValue"] { font-size: 1.05rem; }
+[data-testid="stMetricLabel"] { font-size: .72rem; color: #666; }
+[data-testid="stMetric"]      { padding: .15rem 0 .05rem 0; }
 
-/* Form etiketleri */
+/* Sadece Risk Özeti bloğu daha da küçük */
+#risk-ozet [data-testid="stMetricValue"] { font-size: 0.98rem; line-height: 1.05; }
+#risk-ozet [data-testid="stMetricLabel"] { font-size: 0.68rem; color: #6b7280; }
+#risk-ozet [data-testid="stMetric"]      { padding: .08rem 0 .02rem 0; }
+
+/* DataFrame ve tablo metinleri */
+[data-testid="stDataFrame"] { font-size: .80rem; }
+
+/* Form/ayar etiketleri */
 [data-testid="stNumberInput"] label,
 [data-testid="stSlider"] label,
-[role="radiogroup"] label { font-size: .88rem; }
+[role="radiogroup"] label { font-size: .82rem; }
 
-/* Expander başlığı */
-.st-expanderHeader, [data-baseweb="accordion"] { font-size: .88rem; }
+/* Expander başlıkları */
+.st-expanderHeader, [data-baseweb="accordion"] { font-size: .84rem; }
 
-/* Sadece Risk Özeti bloğunu daha da küçült */
-#risk-ozet [data-testid="stMetricValue"] { font-size: 1.05rem; line-height: 1.1; }
-#risk-ozet [data-testid="stMetricLabel"] { font-size: 0.72rem; color: #6b7280; }
-#risk-ozet [data-testid="stMetric"]      { padding: 0.15rem 0 0.1rem 0; }
+/* Radio/checkbox hizaları biraz sıkı */
+.stRadio > label, .stCheckbox > label { margin-bottom: .15rem; }
 
 /* (opsiyonel) üst menü/footer gizle */
 #MainMenu { visibility: hidden; }
@@ -53,28 +60,7 @@ footer { visibility: hidden; }
 </style>
 """
 
-def show_last_update_badge(last_updated_utc):
-    if not last_updated_utc:
-        return
-    try:
-        sf = ZoneInfo("America/Los_Angeles")
-        dt_sf = last_updated_utc.astimezone(sf)
-        ts_txt = dt_sf.strftime("%d-%m-%Y %H:%M")
-    except Exception:
-        ts_txt = last_updated_utc.strftime("%d-%m-%Y %H:%M")
-    st.markdown("""
-    <style>
-      .update-badge {
-        position: absolute; right: 0; top: -6px;
-        background: #eef2ff; color: #1e293b;
-        border: 1px solid #c7d2fe; border-radius: 9999px;
-        padding: 6px 10px; font-size: 13px;
-      }
-      .header-row { position: relative; }
-    </style>
-    """, unsafe_allow_html=True)
-    st.markdown(f"<div class='update-badge'>🕒 Son veriler: {ts_txt}</div>", unsafe_allow_html=True)
-
+# Çeviri haritası ve eylem ipuçları
 TR_LABEL = {
     "assault":   "Saldırı",
     "burglary":  "Konut/İşyeri Hırsızlığı",
@@ -175,10 +161,16 @@ def render_result_card(df_agg: pd.DataFrame, geoid: str, start_iso: str, horizon
 def color_for_tier(tier: str) -> str:
     return {"Yüksek": "#d62728", "Orta": "#ff7f0e", "Hafif": "#1f77b4"}.get(tier, "#1f77b4")
 
-def build_map_fast(df_agg: pd.DataFrame, geo_features: list, geo_df: pd.DataFrame,
-                   show_popups: bool = False, patrol: Dict | None = None) -> folium.Map:
+def build_map_fast(
+    df_agg: pd.DataFrame,
+    geo_features: list,
+    geo_df: pd.DataFrame,
+    show_popups: bool = False,
+    patrol: Dict | None = None
+) -> folium.Map:
     m = folium.Map(location=[37.7749, -122.4194], zoom_start=12, tiles="cartodbpositron")
-    if df_agg is None or df_agg.empty: return m
+    if df_agg is None or df_agg.empty:
+        return m
 
     color_map = {r[KEY_COL]: color_for_tier(r["tier"]) for _, r in df_agg.iterrows()}
     data_map = df_agg.set_index(KEY_COL).to_dict(orient="index")
@@ -205,14 +197,27 @@ def build_map_fast(df_agg: pd.DataFrame, geo_features: list, geo_df: pd.DataFram
         features.append(f)
 
     fc = {"type": "FeatureCollection", "features": features}
+
     def style_fn(feat):
         gid = feat["properties"].get("id")
-        return {"fillColor": color_map.get(gid, "#9ecae1"), "color": "#666666", "weight": 0.3, "fillOpacity": 0.55}
+        return {
+            "fillColor": color_map.get(gid, "#9ecae1"),
+            "color": "#666666",
+            "weight": 0.3,
+            "fillOpacity": 0.55,
+        }
 
-    tooltip = folium.GeoJsonTooltip(fields=["id", "tier", "expected"],
-                                    aliases=["GEOID", "Öncelik", "E[olay]"],
-                                    localize=True, sticky=False) if show_popups else None
-    popup = folium.GeoJsonPopup(fields=["popup_html"], labels=False, parse_html=False, max_width=280) if show_popups else None
+    tooltip = folium.GeoJsonTooltip(
+        fields=["id", "tier", "expected"],
+        aliases=["GEOID", "Öncelik", "E[olay]"],
+        localize=True,
+        sticky=False,
+    ) if show_popups else None
+
+    popup = folium.GeoJsonPopup(
+        fields=["popup_html"], labels=False, parse_html=False, max_width=280
+    ) if show_popups else None
+
     folium.GeoJson(fc, style_function=style_fn, tooltip=tooltip, popup=popup).add_to(m)
 
     # Üst %1 uyarı
@@ -221,13 +226,20 @@ def build_map_fast(df_agg: pd.DataFrame, geo_features: list, geo_df: pd.DataFram
         geo_df[[KEY_COL, "centroid_lat", "centroid_lon"]], on=KEY_COL
     )
     for _, r in urgent.iterrows():
-        folium.CircleMarker(location=[r["centroid_lat"], r["centroid_lon"]],
-                            radius=5, color="#000", fill=True, fill_color="#ff0000").add_to(m)
+        folium.CircleMarker(
+            location=[r["centroid_lat"], r["centroid_lon"]],
+            radius=5, color="#000", fill=True, fill_color="#ff0000"
+        ).add_to(m)
 
+    # Devriye rotaları
     if patrol and patrol.get("zones"):
         for z in patrol["zones"]:
             folium.PolyLine(z["route"], tooltip=f"{z['id']} rota").add_to(m)
-            folium.Marker([z["centroid"]["lat"], z["centroid"]["lon"]],
-                          icon=folium.DivIcon(html="<div style='background:#111;color:#fff;padding:2px 6px;border-radius:6px'>"
-                                                    f" {z['id']} </div>")).add_to(m)
+            folium.Marker(
+                [z["centroid"]["lat"], z["centroid"]["lon"]],
+                icon=folium.DivIcon(
+                    html=f"<div style='background:#111;color:#fff;padding:2px 6px;border-radius:6px'> {z['id']} </div>"
+                ),
+            ).add_to(m)
+
     return m
