@@ -12,21 +12,17 @@ from utils.constants import SF_TZ_OFFSET, KEY_COL
 from utils.geo import load_geoid_layer, resolve_clicked_gid
 from utils.forecast import precompute_base_intensity, aggregate_fast, prob_ge_k
 from utils.patrol import allocate_patrols
-from utils.ui import SMALL_UI_CSS, show_last_update_badge, render_result_card, build_map_fast
-
-from datetime import datetime
+from utils.ui import SMALL_UI_CSS, render_result_card, build_map_fast
 from components.last_update import show_last_update_badge
 
-# örnek olarak: şu anki UTC zamanı kullan
-last_updated_utc = datetime.utcnow()
-
-# badge'i göster
-show_last_update_badge(last_updated_utc)
-
-# ── Sayfa ayarı
+# ── Sayfa ayarı: mutlaka en üstte olmalı
 st.set_page_config(page_title="SUTAM: Suç Tahmin Modeli", layout="wide")
 st.markdown(SMALL_UI_CSS, unsafe_allow_html=True)
+
+# ── Başlık ve Son Güncelleme Badge
 st.title("SUTAM: Suç Tahmin Modeli")
+last_updated_utc = datetime.utcnow()   # Örnek: şu anki UTC zamanı
+show_last_update_badge(last_updated_utc)
 
 # ── Geo katmanı
 GEO_DF, GEO_FEATURES = load_geoid_layer("data/sf_cells.geojson")
@@ -100,7 +96,6 @@ if sekme == "Operasyon":
 
     with col2:
         st.subheader("Risk Özeti", anchor=False)
-        # Özel küçük puntolu alan: id ile sarmaladık
         with st.container():
             st.markdown("<div id='risk-ozet'>", unsafe_allow_html=True)
             if st.session_state["agg"] is not None:
@@ -116,20 +111,23 @@ if sekme == "Operasyon":
 
         st.subheader("En riskli bölgeler")
         if st.session_state["agg"] is not None:
-            from utils.forecast import prob_ge_k
             def top_risky_table(df_agg: pd.DataFrame, n: int = 12) -> pd.DataFrame:
                 tab = df_agg[[KEY_COL, "expected"]].copy().sort_values("expected", ascending=False).head(n).reset_index(drop=True)
                 lam = tab["expected"].to_numpy()
                 tab["P(≥1)%"] = [round(prob_ge_k(l, 1) * 100, 1) for l in lam]
-                tab["E[olay] (λ)"] = tab["expected"].round(2); tab = tab.drop(columns=["expected"])
-                return tab
+                tab["E[olay] (λ)"] = tab["expected"].round(2)
+                return tab.drop(columns=["expected"])
             st.dataframe(top_risky_table(st.session_state["agg"]), use_container_width=True, height=300)
 
         st.subheader("Devriye özeti")
         if st.session_state.get("agg") is not None and btn_patrol:
-            st.session_state["patrol"] = allocate_patrols(st.session_state["agg"], GEO_DF,
-                                                          k_planned=int(K_planned), duty_minutes=int(duty_minutes),
-                                                          cell_minutes=int(cell_minutes), travel_overhead=0.40)
+            st.session_state["patrol"] = allocate_patrols(
+                st.session_state["agg"], GEO_DF,
+                k_planned=int(K_planned),
+                duty_minutes=int(duty_minutes),
+                cell_minutes=int(cell_minutes),
+                travel_overhead=0.40
+            )
         patrol = st.session_state.get("patrol")
         if patrol and patrol.get("zones"):
             rows = [{
