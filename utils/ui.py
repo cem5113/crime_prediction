@@ -44,10 +44,19 @@ small, .stCaption, .st-emotion-cache-1wbqy5l { font-size: .74rem; }
 [data-testid="stSlider"] { padding-top: .10rem; padding-bottom: .05rem; }
 input, textarea { font-size: .80rem !important; }
 
-/* === Metric kartları === */
+/* === Metric kartları (genel) === */
 [data-testid="stMetricValue"] { font-size: .95rem; }
 [data-testid="stMetricLabel"] { font-size: .68rem; color:#666; }
 [data-testid="stMetric"]      { padding: .06rem 0 .02rem 0; }
+
+/* st.metric ellipsis düzeltmesi (label kesilmesin) */
+[data-testid="stMetricLabel"] p{
+  max-width:none !important;
+  overflow:visible !important;
+  text-overflow:clip !important;
+  white-space:nowrap !important;
+  margin:0 !important;
+}
 
 /* Risk Özeti bloğu (bir tık daha küçük) */
 #risk-ozet [data-testid="stMetricValue"] { font-size: .90rem; line-height: 1.0; }
@@ -69,8 +78,31 @@ input, textarea { font-size: .80rem !important; }
 /* === Üst menü/footer (isteğe bağlı) === */
 #MainMenu { visibility: hidden; }
 footer { visibility: hidden; }
+
+/* === Özel KPI kartı (tooltip destekli) === */
+.kpi{display:flex;flex-direction:column;gap:2px}
+.kpi-label{font-size:.68rem;color:#6b7280}
+.kpi-value{font-size:.95rem;font-weight:600}
 </style>
 """
+
+# ───────────────────────────── KPI satırı (tooltip'li, tek tip görünüm) ─────────────────────────────
+def render_kpi_row(items: list[tuple[str, str | float, str]]):
+    """
+    items = [(label, value, tooltip), ...]
+    Tooltip tarayıcı 'title' ile gösterilir.
+    """
+    cols = st.columns(len(items))
+    for col, (label, value, tip) in zip(cols, items):
+        col.markdown(
+            f"""
+            <div class="kpi" title="{tip}">
+              <div class="kpi-label">{label}</div>
+              <div class="kpi-value">{value}</div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
 
 # --- çeviri eşleştirmeleri ---
 TR_LABEL = {
