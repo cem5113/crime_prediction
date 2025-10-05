@@ -9,20 +9,55 @@ import pandas as pd
 import folium
 from streamlit_folium import st_folium
 import json
+import os
 from pathlib import Path
+from zoneinfo import ZoneInfo  # yerel saat rozetinde kullanacağız
 
 import streamlit as st
 import altair as alt
 
-with open("last_update.json") as f:
-    ts_str = json.load(f)["last_update_utc"]
-last_updated_utc = datetime.fromisoformat(ts_str)
-show_last_update_badge(last_updated_utc)
+# --- SAYFA AYARLARI (Streamlit'te İLK çağrı olmalı!) ---
+st.set_page_config(page_title="SUTAM: Suç Tahmin Modeli", layout="wide")
 
-# SAYFA AYARLARI 
-st.set_page_config(page_title="SUTAM: Suç Tahmin Modeli", layout="wide")
-# SAYFA AYARLARI 
-st.set_page_config(page_title="SUTAM: Suç Tahmin Modeli", layout="wide")
+# --- “Son güncelleme” rozetini çizen yardımcı ---
+def show_last_update_badge(last_updated_utc: datetime | None) -> None:
+    if not last_updated_utc:
+        return
+    try:
+        sf = ZoneInfo("America/Los_Angeles")
+        dt_sf = last_updated_utc.astimezone(sf)
+        ts_txt = dt_sf.strftime("%d-%m-%Y %H:%M")
+    except Exception:
+        ts_txt = last_updated_utc.strftime("%d-%m-%Y %H:%M")
+
+    st.markdown("""
+    <style>
+      .update-badge {
+        position: absolute; right: 0; top: -6px;
+        background: #eef2ff; color: #1e293b;
+        border: 1px solid #c7d2fe; border-radius: 9999px;
+        padding: 6px 10px; font-size: 13px;
+      }
+      .header-row { position: relative; }
+    </style>
+    """, unsafe_allow_html=True)
+
+    # başlığın bulunduğu satırın sağ üstüne otursun
+    st.markdown(f"<div class='update-badge'>🕒 Son veriler: {ts_txt}</div>", unsafe_allow_html=True)
+
+# --- last_update.json güvenli okuma ---
+def read_last_update(path: str = "last_update.json") -> datetime | None:
+    p = Path(os.environ.get("LAST_UPDATE_JSON", path))
+    if not p.exists():
+        return None
+    try:
+        with p.open("r", encoding="utf-8") as f:
+            ts_str = json.load(f).get("last_update_utc")
+        return datetime.fromisoformat(ts_str) if ts_str else None
+    except Exception:
+        return None
+
+last_updated_utc = read_last_update()
 
 # --- Stil (başlık 1 tık büyük + 1 tık aşağı) ---
 SMALL_UI_CSS = """
