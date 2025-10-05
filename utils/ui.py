@@ -176,6 +176,9 @@ def render_result_card(df_agg: pd.DataFrame, geoid: str, start_iso: str, horizon
         return
     row = row.iloc[0].to_dict()
 
+    # Near-repeat (yakın tekrar) etkisi — satırdan oku, yoksa 0.0
+    nr = float(row.get("nr_boost", 0.0))
+
     type_lams = {t: float(row.get(t, 0.0)) for t in CRIME_TYPES}
     type_probs = {TR_LABEL[t]: 1.0 - math.exp(-lam) for t, lam in type_lams.items()}
     probs_sorted = sorted(type_probs.items(), key=lambda x: x[1], reverse=True)
@@ -208,6 +211,11 @@ def render_result_card(df_agg: pd.DataFrame, geoid: str, start_iso: str, horizon
             st.write(f"- {line}")
     st.markdown("---")
     st.markdown(f"**Top-2 öneri:** {', '.join(top2) if top2 else '—'}")
+    # Near-repeat bilgisi burada gösterilir
+    st.markdown(
+        f"- **Near-repeat etkisi:** {nr:.2f} (0=etki yok, 1=yüksek). "
+        "Taze olay çevresinde kısa ufukta risk artar."
+    )
     st.markdown(f"- **Risk penceresi:** {win_text}  \n- **Güven:** {conf_txt} (q10={q10:.2f}, q90={q90:.2f})")
 
 # ───────────── Harita ─────────────
