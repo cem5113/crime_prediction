@@ -113,7 +113,7 @@ def render_kpi_row(items: list[tuple[str, str | float, str]]):
             unsafe_allow_html=True,
         )
 
-# --- çeviri eşleştirmeleri ---
+# --- TR etiketleri ve saha ipuçları ---
 TR_LABEL = {
     "assault":   "Saldırı",
     "burglary":  "Konut/İşyeri Hırsızlığı",
@@ -137,13 +137,16 @@ def actionable_cues(top_types: list[tuple[str, float]], max_items: int = 3) -> l
     for t in tips:
         if t not in seen:
             seen.add(t); out.append(t)
-        if len(out) >= max_items: break
+        if len(out) >= max_items:
+            break
     return out
 
 def confidence_label(q10: float, q90: float) -> str:
     width = q90 - q10
-    if width < 0.18: return "yüksek"
-    if width < 0.30: return "orta"
+    if width < 0.18:
+        return "yüksek"
+    if width < 0.30:
+        return "orta"
     return "düşük"
 
 def risk_window_text(start_iso: str, horizon_h: int) -> str:
@@ -166,23 +169,114 @@ def risk_window_text(start_iso: str, horizon_h: int) -> str:
         return f"{t1:%H:%M}–{t2:%H:%M} (tepe ≈ {t_peak:%H:%M})"
     return f"{start:%H:%M}–{t2:%H:%M}"
 
+# ───────────────────────────── SONUÇ KARTI ─────────────────────────────
 def render_result_card(df_agg: pd.DataFrame, geoid: str, start_iso: str, horizon_h: int):
+    if df_agg is None or df_agg.empty or geoid is None:
+        st.info("Bölge seçilmedi.")
+        return
+
+    row = df_agg.loc[df_agg[KEY_COL] == geoid]
+    if row.empty:
+        st.info("Seçilen bölge için veri yok.")
+        return
+    row = row.iloc[0].to_dict()
+
+    # Near-repeat (varsa)
+    nr = float(row.get("nr_boost", 0.0))
+
+    # Tür bazında λ ve P(≥1)
+    type_lams = {t: float(row.get(t, 0.0)) for t in CRIME_TYPES}
+    type_probs = {TR_LABEL.get(t, t): 1.0 - math.exp(-lam) for t, lam in type_lams.items()}
+    probs_sorted = sorted(type_probs.items(), key=lambda x: x[1], reverse=True)
+
+    # İlk iki tür için 90% PI metni
+    pi90_lines: list[str] = []
+    for name_tr, _p in probs_sorted[:2]:
+        t_eng = next((k for k, v in TR_LABEL.items() if v == name_tr), None)
+        if t_eng is None:
+            continue
+        lam = type_lams.get(t_eng, 0.0)
+        lo, hi = pois_pi90(lam)
+        pi90_lines.append(f"{name_tr}: {lam:.1f} ({lo}–{hi})")
+
+    # Güven ve zaman penceresi
+    q10 = float(row.get("q10", 0.0))
+    q90 = float(row.get("q90", 0.0))
+    conf_txt = confidence_label(q10, q90)
+    win_text = risk_window_text(start_iso, horizon_h)
+
+    # UI
+    st.markdown("### 🧭 Sonuç Kartı")
+    c1, c2, c3 = st.columns([1.0, 1.2, 1.2])
+
+    with c1:
+        st.metric("Bölge (GEOID)", geoid)
+        st.metric("Öncelik", str(row.get("tier", "—")))
+        st.metric("Ufuk", f"{horizon_h} saat")
+
+    with c2:
+        st.markdown("**En olası suç türleri (P≥1)**")
+        for name_tr, p in probs_sorted[:5]:
+            st.write(f"- {name_tr}: {p:.2f}")
+
+    with c3:
+        st.markdown("**Beklenen sayılar (90% PI)**")
+        for line in pi90_lines:
+            st.write(f"- {line}")
+
+    st.markdown("---")
+
+    # Top-2 öneri metni
+    top2 = [name for name, _ in probs_sorted[:2]]
+    st.markdown(f"**Top-2 öneri:** {', '.join(top2) if top2 else '—'}")
+
+    # Kolluğa pratik öneriler
+    try:
+        top_types_eng = []
+        for name_tr, _ in probs_sorted[:2]:
+            t_eng = next((k for k, v in TR_LABEL.items() if v == name_tr), None)
+            if t_eng:
+                top_types_eng.append((t_eng, type_lams.get(t_eng, 0.0)))
+        cues = actionable_cues(top_types_eng, max_items=3)
+    except Exception:
+        cues = []
+
+    # Near-repeat satırı (tek yerde)
+    if nr > 0:
+        st.markdown(
+            f"- **Near-repeat etkisi:** {nr:.2f} (0=etki yok, 1=yüksek). "
+            "Taze olay çevresinde kısa ufukta risk artar."
+        )
+
+    st.markdown(f"- **Risk penceresi:** {win_text}")
+    st.markdown(f"- **Güven:** {conf_txt} (q10={q10:.2f}, q90={q90:.2f})")
+
+    if cues:
+        st.markdown("**Kolluğa öneriler:**")
+        for c in cues:
+            st.write(f"- {c}")
 
 # ───────────── Harita ─────────────
 def color_for_tier(tier: str) -> str:
     return {"Yüksek": "#d62728", "Orta": "#ff7f0e", "Hafif": "#1f77b4"}.get(tier, "#1f77b4")
 
-def build_map_fast(df_agg: pd.DataFrame, geo_features: list, geo_df: pd.DataFrame,
-                   show_popups: bool = False, patrol: Dict | None = None) -> folium.Map:
+def build_map_fast(
+    df_agg: pd.DataFrame,
+    geo_features: list,
+    geo_df: pd.DataFrame,
+    show_popups: bool = False,
+    patrol: Dict | None = None
+) -> folium.Map:
     m = folium.Map(location=[37.7749, -122.4194], zoom_start=12, tiles="cartodbpositron")
-    if df_agg is None or df_agg.empty: return m
+    if df_agg is None or df_agg.empty:
+        return m
 
     color_map = {r[KEY_COL]: color_for_tier(r["tier"]) for _, r in df_agg.iterrows()}
     data_map = df_agg.set_index(KEY_COL).to_dict(orient="index")
 
     features = []
     for feat in geo_features:
-        f = json.loads(json.dumps(feat))
+        f = json.loads(json.dumps(feat))  # derin kopya
         gid = f["properties"].get("id")
         row = data_map.get(gid)
         if row:
@@ -202,6 +296,7 @@ def build_map_fast(df_agg: pd.DataFrame, geo_features: list, geo_df: pd.DataFram
         features.append(f)
 
     fc = {"type": "FeatureCollection", "features": features}
+
     def style_fn(feat):
         gid = feat["properties"].get("id")
         return {"fillColor": color_map.get(gid, "#9ecae1"), "color": "#666666", "weight": 0.3, "fillOpacity": 0.55}
@@ -230,6 +325,7 @@ def build_map_fast(df_agg: pd.DataFrame, geo_features: list, geo_df: pd.DataFram
             radius=5, color="#000", fill=True, fill_color="#ff0000"
         ).add_to(m)
 
+    # Devriye rotaları
     if patrol and patrol.get("zones"):
         for z in patrol["zones"]:
             folium.PolyLine(z["route"], tooltip=f"{z['id']} rota").add_to(m)
@@ -238,4 +334,5 @@ def build_map_fast(df_agg: pd.DataFrame, geo_features: list, geo_df: pd.DataFram
                 icon=folium.DivIcon(html="<div style='background:#111;color:#fff;padding:2px 6px;border-radius:6px'>"
                                          f" {z['id']} </div>")
             ).add_to(m)
+
     return m
