@@ -21,7 +21,6 @@ st.markdown(SMALL_UI_CSS, unsafe_allow_html=True)
 
 # ── Başlık ve "Son güncelleme" rozetini göster
 st.title("SUTAM: Suç Tahmin Modeli")
-show_last_update_badge(datetime.utcnow())  # örnek: UTC now
 
 # ── Geo katmanı
 GEO_DF, GEO_FEATURES = load_geoid_layer("data/sf_cells.geojson")
