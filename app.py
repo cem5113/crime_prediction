@@ -14,7 +14,14 @@ from utils.forecast import precompute_base_intensity, aggregate_fast, prob_ge_k
 from utils.patrol import allocate_patrols
 from utils.ui import SMALL_UI_CSS, render_result_card, build_map_fast, render_kpi_row
 from components.last_update import show_last_update_badge
-from utils.reports import load_events
+
+# 'utils' paketini bulamazsa çalışma dizinini ekleyip fallback yap
+try:
+    from utils.reports import load_events
+except ModuleNotFoundError:
+    import sys, os
+    sys.path.append(os.path.join(os.path.dirname(__file__), "utils"))
+    from reports import load_events  # utils/reports.py
 
 # ── Sayfa ayarı: Streamlit'te en üstte olmalı
 st.set_page_config(page_title="SUTAM: Suç Tahmin Modeli", layout="wide")
