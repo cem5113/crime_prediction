@@ -12,6 +12,14 @@ import streamlit as st
 from utils.constants import KEY_COL, CRIME_TYPES
 from utils.forecast import pois_pi90
 
+__all__ = [
+    "SMALL_UI_CSS",
+    "render_result_card",
+    "build_map_fast",
+    "render_kpi_row",
+    "render_day_hour_heatmap",
+]
+
 # ────────────────────────────── KÜÇÜK VE TUTARLI TİPOGRAFİ ──────────────────────────────
 SMALL_UI_CSS = """
 <style>
@@ -255,10 +263,6 @@ def render_result_card(df_agg: pd.DataFrame, geoid: str, start_iso: str, horizon
         st.markdown("**Kolluğa öneriler:**")
         for c in cues:
             st.write(f"- {c}")
-
-# ───────────── Harita ─────────────
-def color_for_tier(tier: str) -> str:
-    return {"Yüksek": "#d62728", "Orta": "#ff7f0e", "Hafif": "#1f77b4"}.get(tier, "#1f77b4")
 
 # ───────────── Harita ─────────────
 def color_for_tier(tier: str) -> str:
