@@ -14,6 +14,7 @@ from utils.patrol import allocate_patrols
 from utils.ui import (
     SMALL_UI_CSS, render_result_card, build_map_fast, render_kpi_row,
     render_day_hour_heatmap,  # <<< ısı matrisi
+    build_map_fast_deck,
 )
 from utils.constants import (
     SF_TZ_OFFSET, KEY_COL,
@@ -70,6 +71,7 @@ st.sidebar.divider()
 
 # ---- GÜNCELLENEN KISIM ----
 st.sidebar.header("Devriye Parametreleri")
+engine = st.sidebar.radio("Harita motoru", ["Folium", "pydeck"], index=0, horizontal=True)
 
 # Harita katmanları
 st.sidebar.subheader("Harita katmanları")
@@ -144,14 +146,33 @@ if sekme == "Operasyon":
             })
 
         agg = st.session_state["agg"]
-        if agg is not None:
+        if engine == "Folium":
             m = build_map_fast(
                 agg, GEO_FEATURES, GEO_DF,
                 show_popups=show_popups,
                 patrol=st.session_state.get("patrol"),
-                show_poi=show_poi,            # <<< overlay bayrakları eklendi
-                show_transit=show_transit,    # <<<
+                show_poi=show_poi,
+                show_transit=show_transit,
             )
+            ret = st_folium(
+                m, key="riskmap", height=540,
+                returned_objects=["last_object_clicked", "last_clicked"]
+            )
+            if ret:
+                gid, _ = resolve_clicked_gid(GEO_DF, ret)
+                if gid:
+                    st.session_state["explain"] = {"geoid": gid}
+        else:
+            deck = build_map_fast_deck(
+                agg, GEO_DF,
+                show_poi=show_poi,
+                show_transit=show_transit,
+                patrol=st.session_state.get("patrol"),
+            )
+            st.pydeck_chart(deck)
+            # Not: pydeck tarafında hücre tıklama -> açıklama kartı için
+            # pick event kablolaması ayrı yapılır; şimdilik sadece görüntüleme.
+
             ret = st_folium(
                 m, key="riskmap", height=540,
                 returned_objects=["last_object_clicked", "last_clicked"]
