@@ -5,7 +5,7 @@ from datetime import datetime, timedelta
 import numpy as np
 import pandas as pd
 from typing import Optional, Dict, Any, Iterable
-from utils.constants import CRIME_TYPES, KEY_COL, CATEGORY_TO_KEYS, SF_TZ_OFFSET
+from utils.constants import CRIME_TYPES, KEY_COL, CATEGORY_TO_KEYS
 
 # ---- küçük yardımcılar ----
 def _haversine_m(lat1, lon1, lat2, lon2) -> float:
@@ -15,12 +15,6 @@ def _haversine_m(lat1, lon1, lat2, lon2) -> float:
     a = (np.sin(dlat/2)**2 +
          np.cos(np.radians(lat1))*np.cos(np.radians(lat2))*np.sin(dlon/2)**2)
     return 2 * R * np.arcsin(np.sqrt(a))
-
-def _season_of_month(m: int) -> str:
-    if m in (12, 1, 2): return "Winter"
-    if m in (3, 4, 5):  return "Spring"
-    if m in (6, 7, 8):  return "Summer"
-    return "Autumn"
 
 # -------------------- Baz yoğunluk: normalize --------------------
 def precompute_base_intensity(geo_df: pd.DataFrame) -> np.ndarray:
@@ -68,7 +62,7 @@ def _near_repeat_score(
     maxv = nr.max()
     return (nr / maxv) if maxv > 1e-9 else np.zeros_like(nr)
 
-# -------------------- Hızlı agregasyon (NR + filtreler) --------------------
+# -------------------- Hızlı agregasyon (NR + filtre) --------------------
 def aggregate_fast(
     start_iso: str,
     horizon_h: int,
@@ -81,7 +75,7 @@ def aggregate_fast(
     nr_lookback_h: int = 24,
     nr_radius_m: int = 400,
     nr_decay_h: float = 12.0,
-    filters: Optional[Dict[str, Any]] = None,   # <<< eklendi
+    filters: Optional[Dict[str, Any]] = None,
 ) -> pd.DataFrame:
     start = datetime.fromisoformat(start_iso)
     hours = np.arange(horizon_h)
@@ -125,33 +119,16 @@ def aggregate_fast(
         ["Yüksek", "Orta"], default="Hafif",
     )
 
-    # --- filtreler uygulanıyor
+    # --- sadece kategori filtresi uygulanıyor
     if filters:
-        df = out.copy()
-        # zaman bilgileri ekle
-        base_dt = pd.to_datetime(start_iso) - timedelta(hours=SF_TZ_OFFSET)
-        df["ts_start"] = base_dt
-        df["hour"] = pd.to_datetime(df["ts_start"]).dt.hour
-        dmap = {0:"Mon",1:"Tue",2:"Wed",3:"Thu",4:"Fri",5:"Sat",6:"Sun"}
-        df["dow"] = pd.to_datetime(df["ts_start"]).dt.dayofweek.map(dmap)
-        df["season"] = pd.to_datetime(df["ts_start"]).dt.month.map(_season_of_month)
-
-        if filters.get("days"):
-            df = df[df["dow"].isin(filters["days"])]
-
-        if filters.get("season"):
-            df = df[df["season"] == filters["season"]]
-
         cats: Optional[Iterable[str]] = filters.get("cats")
         if cats:
             wanted_keys = []
             for c in cats:
                 wanted_keys += CATEGORY_TO_KEYS.get(c, [])
-            wanted_cols = [col for col in wanted_keys if col in df.columns]
+            wanted_cols = [col for col in wanted_keys if col in out.columns]
             if wanted_cols:
-                df["expected"] = df[wanted_cols].sum(axis=1)
-
-        out = df
+                out["expected"] = out[wanted_cols].sum(axis=1)
 
     return out
 
