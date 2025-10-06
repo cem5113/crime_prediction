@@ -78,8 +78,17 @@ start_h, end_h = st.sidebar.slider(
 )
 
 # Sadece kategori filtresi kaldı
-sel_categories = st.sidebar.multiselect("Kategori", CATEGORIES, default=[])
-filters = {"cats": sel_categories or None}
+sel_categories = st.sidebar.multiselect(
+    "Kategori",
+    ["(Hepsi)"] + CATEGORIES,   # <<< buraya hepsi eklendi
+    default=[]
+)
+
+# filtre logic
+if sel_categories and "(Hepsi)" in sel_categories:
+    filters = {"cats": CATEGORIES}   # tüm kategoriler seçili
+else:
+    filters = {"cats": sel_categories or None}
 
 st.sidebar.divider()
 st.sidebar.subheader("Devriye Parametreleri")
