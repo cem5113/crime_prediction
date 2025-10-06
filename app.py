@@ -8,13 +8,16 @@ import pandas as pd
 import streamlit as st
 from streamlit_folium import st_folium
 
-from utils.constants import SF_TZ_OFFSET, KEY_COL
 from utils.geo import load_geoid_layer, resolve_clicked_gid
 from utils.forecast import precompute_base_intensity, aggregate_fast, prob_ge_k
 from utils.patrol import allocate_patrols
 from utils.ui import SMALL_UI_CSS, render_result_card, build_map_fast, render_kpi_row
 from components.last_update import show_last_update_badge
-from utils.constants import SF_TZ_OFFSET, KEY_COL, MODEL_VERSION, MODEL_LAST_TRAIN
+from utils.constants import (
+    SF_TZ_OFFSET, KEY_COL,
+    MODEL_VERSION, MODEL_LAST_TRAIN,
+    CATEGORIES, DAYS, SEASONS,
+)
 from components.last_update import show_last_update_badge
 
 try:
@@ -70,7 +73,18 @@ start_h, end_h = st.sidebar.slider(
     "Zaman aralığı (şimdiden + saat)",
     min_value=0, max_value=max_h, value=(0, max_h), step=step
 )
+st.sidebar.divider()
+st.sidebar.subheader("Devriye Parametreleri")
+st.sidebar.subheader("Filtreler")
+sel_days = st.sidebar.multiselect("Gün", DAYS, default=[])
+sel_season = st.sidebar.selectbox("Sezon", ["(tümü)"] + SEASONS, index=0)
+sel_categories = st.sidebar.multiselect("Kategori", CATEGORIES, default=[])
 
+filters = {
+    "days": sel_days or None,
+    "season": None if sel_season == "(tümü)" else sel_season,
+    "cats": sel_categories or None,
+}
 st.sidebar.divider()
 st.sidebar.subheader("Devriye Parametreleri")
 K_planned    = st.sidebar.number_input("Planlanan devriye sayısı (K)", min_value=1, max_value=50, value=6, step=1)
@@ -110,6 +124,7 @@ if sekme == "Operasyon":
                 nr_lookback_h=24,        # ← geçmişe bakış (saat)
                 nr_radius_m=400,         # ← mekânsal yarıçap (metre)
                 nr_decay_h=12.0,         # ← zamansal sönüm (saat)
+                filters=filters,
             )
             
             st.session_state.update({
