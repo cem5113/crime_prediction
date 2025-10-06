@@ -4,7 +4,8 @@ import math
 from datetime import datetime, timedelta
 import numpy as np
 import pandas as pd
-from utils.constants import CRIME_TYPES, KEY_COL
+from typing import Optional, Dict, Any, Iterable
+from utils.constants import CRIME_TYPES, KEY_COL, CATEGORY_TO_KEYS, SF_TZ_OFFSET
 
 # ---- küçük yardımcılar ----
 def _haversine_m(lat1, lon1, lat2, lon2) -> float:
@@ -15,6 +16,12 @@ def _haversine_m(lat1, lon1, lat2, lon2) -> float:
          np.cos(np.radians(lat1))*np.cos(np.radians(lat2))*np.sin(dlon/2)**2)
     return 2 * R * np.arcsin(np.sqrt(a))
 
+def _season_of_month(m: int) -> str:
+    if m in (12, 1, 2): return "Winter"
+    if m in (3, 4, 5):  return "Spring"
+    if m in (6, 7, 8):  return "Summer"
+    return "Autumn"
+
 # -------------------- Baz yoğunluk: normalize --------------------
 def precompute_base_intensity(geo_df: pd.DataFrame) -> np.ndarray:
     lon = geo_df["centroid_lon"].to_numpy()
@@ -23,7 +30,7 @@ def precompute_base_intensity(geo_df: pd.DataFrame) -> np.ndarray:
     peak2 = np.exp(-(((lon + 122.42) ** 2) / 0.0006 + ((lat - 37.76) ** 2) / 0.0006))
     raw = 0.2 + 0.8 * (peak1 + peak2) + 0.07
     raw = raw - raw.min()
-    return raw / (raw.max() + 1e-9)  # 0..1
+    return raw / (raw.max() + 1e-9)
 
 # -------------------- Near-Repeat (NR) skor vektörü --------------------
 def _near_repeat_score(
@@ -35,10 +42,6 @@ def _near_repeat_score(
     spatial_radius_m: int = 400,
     temporal_decay_h: float = 12.0,
 ) -> np.ndarray:
-    """
-    Her hücre için 0..1 arası NR skoru üretir.
-    Yakın (mesafe & zaman) olaylar daha yüksek ağırlık alır.
-    """
     if events is None or events.empty:
         return np.zeros(len(geo_df), dtype=float)
 
@@ -51,7 +54,6 @@ def _near_repeat_score(
     cent_lat = geo_df["centroid_lat"].to_numpy()
     cent_lon = geo_df["centroid_lon"].to_numpy()
 
-    # vektörel hesap: her olay için tüm centroid mesafeleri
     nr = np.zeros(len(geo_df), dtype=float)
     tau = max(temporal_decay_h, 1e-6)
 
@@ -62,34 +64,29 @@ def _near_repeat_score(
         w_time = np.exp(-max(dt_h, 0.0) / tau)
         nr += w_space * w_time
 
-    # 0..1’a sıkıştır
     nr = nr - nr.min()
     maxv = nr.max()
     return (nr / maxv) if maxv > 1e-9 else np.zeros_like(nr)
 
-# -------------------- Hızlı agregasyon (NR dahil) --------------------
+# -------------------- Hızlı agregasyon (NR + filtreler) --------------------
 def aggregate_fast(
     start_iso: str,
     horizon_h: int,
     geo_df: pd.DataFrame,
     base_int: np.ndarray,
     *,
-    k_lambda: float = 0.12,       # saatlik ölçek
+    k_lambda: float = 0.12,
     events: pd.DataFrame | None = None,
-    near_repeat_alpha: float = 0.35,  # NR katkı gücü (0..1 tipik)
+    near_repeat_alpha: float = 0.35,
     nr_lookback_h: int = 24,
     nr_radius_m: int = 400,
     nr_decay_h: float = 12.0,
+    filters: Optional[Dict[str, Any]] = None,   # <<< eklendi
 ) -> pd.DataFrame:
-    """
-    Saatlik λ = k_lambda * base_int * diurnal * (1 + near_repeat_alpha * NR)
-    expected = saatlik λ’ların toplamı
-    """
     start = datetime.fromisoformat(start_iso)
     hours = np.arange(horizon_h)
     diurnal = 1.0 + 0.4 * np.sin((((start.hour + hours) % 24 - 18) / 24) * 2 * np.pi)
 
-    # Near-Repeat skoru (0..1)
     nr = _near_repeat_score(
         geo_df, events, start_iso,
         lookback_h=nr_lookback_h,
@@ -97,17 +94,15 @@ def aggregate_fast(
         temporal_decay_h=nr_decay_h,
     )
 
-    # Saatlik λ
     lam_hour = k_lambda * base_int[:, None] * diurnal[None, :]
-    lam_hour *= (1.0 + near_repeat_alpha * nr[:, None])   # NR ile arttır
-    lam_hour = np.clip(lam_hour, 0.0, 0.9)                # emniyet
+    lam_hour *= (1.0 + near_repeat_alpha * nr[:, None])
+    lam_hour = np.clip(lam_hour, 0.0, 0.9)
 
     expected = lam_hour.sum(axis=1)
     p_hour = 1.0 - np.exp(-lam_hour)
     q10 = np.quantile(p_hour, 0.10, axis=1)
     q90 = np.quantile(p_hour, 0.90, axis=1)
 
-    # Tür dağılımı
     rng = np.random.default_rng(42)
     alpha = np.array([1.5, 1.2, 2.0, 1.0, 1.3])
     W = rng.dirichlet(alpha, size=len(geo_df))
@@ -120,7 +115,7 @@ def aggregate_fast(
         "q10": q10, "q90": q90,
         "assault": assault, "burglary": burglary, "theft": theft,
         "robbery": robbery, "vandalism": vandalism,
-        "nr_boost": nr,     # ← NR skoru (0..1)
+        "nr_boost": nr,
     })
 
     q90_thr = out["expected"].quantile(0.90)
@@ -129,6 +124,35 @@ def aggregate_fast(
         [out["expected"] >= q90_thr, out["expected"] >= q70_thr],
         ["Yüksek", "Orta"], default="Hafif",
     )
+
+    # --- filtreler uygulanıyor
+    if filters:
+        df = out.copy()
+        # zaman bilgileri ekle
+        base_dt = pd.to_datetime(start_iso) - timedelta(hours=SF_TZ_OFFSET)
+        df["ts_start"] = base_dt
+        df["hour"] = pd.to_datetime(df["ts_start"]).dt.hour
+        dmap = {0:"Mon",1:"Tue",2:"Wed",3:"Thu",4:"Fri",5:"Sat",6:"Sun"}
+        df["dow"] = pd.to_datetime(df["ts_start"]).dt.dayofweek.map(dmap)
+        df["season"] = pd.to_datetime(df["ts_start"]).dt.month.map(_season_of_month)
+
+        if filters.get("days"):
+            df = df[df["dow"].isin(filters["days"])]
+
+        if filters.get("season"):
+            df = df[df["season"] == filters["season"]]
+
+        cats: Optional[Iterable[str]] = filters.get("cats")
+        if cats:
+            wanted_keys = []
+            for c in cats:
+                wanted_keys += CATEGORY_TO_KEYS.get(c, [])
+            wanted_cols = [col for col in wanted_keys if col in df.columns]
+            if wanted_cols:
+                df["expected"] = df[wanted_cols].sum(axis=1)
+
+        out = df
+
     return out
 
 # -------------------- Poisson yardımcıları --------------------
