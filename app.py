@@ -16,7 +16,7 @@ from components.last_update import show_last_update_badge
 from utils.constants import (
     SF_TZ_OFFSET, KEY_COL,
     MODEL_VERSION, MODEL_LAST_TRAIN,
-    CATEGORIES, DAYS, SEASONS,
+    CATEGORIES,
 )
 from components.last_update import show_last_update_badge
 
@@ -66,25 +66,21 @@ st.sidebar.markdown("### Görünüm")
 sekme = st.sidebar.radio("", options=["Operasyon", "Raporlar"], index=0, horizontal=True)
 st.sidebar.divider()
 
-st.sidebar.header("Ayarlar")
+# ---- GÜNCELLENEN KISIM ----
+st.sidebar.header("Devriye Parametreleri")
+
+# Ufuk seçimi
 ufuk = st.sidebar.radio("Ufuk", options=["24s", "48s", "7g"], index=0, horizontal=True)
 max_h, step = (24, 1) if ufuk == "24s" else (48, 3) if ufuk == "48s" else (7 * 24, 24)
 start_h, end_h = st.sidebar.slider(
     "Zaman aralığı (şimdiden + saat)",
     min_value=0, max_value=max_h, value=(0, max_h), step=step
 )
-st.sidebar.divider()
-st.sidebar.subheader("Devriye Parametreleri")
-st.sidebar.subheader("Filtreler")
-sel_days = st.sidebar.multiselect("Gün", DAYS, default=[])
-sel_season = st.sidebar.selectbox("Sezon", ["(tümü)"] + SEASONS, index=0)
-sel_categories = st.sidebar.multiselect("Kategori", CATEGORIES, default=[])
 
-filters = {
-    "days": sel_days or None,
-    "season": None if sel_season == "(tümü)" else sel_season,
-    "cats": sel_categories or None,
-}
+# Sadece kategori filtresi kaldı
+sel_categories = st.sidebar.multiselect("Kategori", CATEGORIES, default=[])
+filters = {"cats": sel_categories or None}
+
 st.sidebar.divider()
 st.sidebar.subheader("Devriye Parametreleri")
 K_planned    = st.sidebar.number_input("Planlanan devriye sayısı (K)", min_value=1, max_value=50, value=6, step=1)
@@ -95,6 +91,7 @@ colA, colB = st.sidebar.columns(2)
 btn_predict = colA.button("Tahmin et")
 btn_patrol  = colB.button("Devriye öner")
 show_popups = st.sidebar.checkbox("Hücre popup'larını (en olası 3 suç) göster", value=True)
+# ---- GÜNCELLENEN KISIM ----
 
 # ── State
 if "agg" not in st.session_state:
@@ -119,11 +116,11 @@ if sekme == "Operasyon":
             # Tahmin (near-repeat parametreleri ile)
             agg = aggregate_fast(
                 start_iso, horizon_h, GEO_DF, BASE_INT,
-                events=events_df,        # ← NR için olaylar
-                near_repeat_alpha=0.35,  # ← katkı gücü (0.0 kapatır; 0.2–0.5 arası deneyebilirsin)
-                nr_lookback_h=24,        # ← geçmişe bakış (saat)
-                nr_radius_m=400,         # ← mekânsal yarıçap (metre)
-                nr_decay_h=12.0,         # ← zamansal sönüm (saat)
+                events=events_df,
+                near_repeat_alpha=0.35,
+                nr_lookback_h=24,
+                nr_radius_m=400,
+                nr_decay_h=12.0,
                 filters=filters,
             )
             
@@ -181,7 +178,7 @@ if sekme == "Operasyon":
             def top_risky_table(df_agg: pd.DataFrame, n: int = 12) -> pd.DataFrame:
                 cols = [KEY_COL, "expected"]
                 if "nr_boost" in df_agg.columns:
-                    cols.append("nr_boost")  # NR varsa tabloya al
+                    cols.append("nr_boost")
             
                 tab = (
                     df_agg[cols]
