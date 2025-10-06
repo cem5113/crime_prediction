@@ -265,14 +265,11 @@ if sekme == "Operasyon":
             } for z in patrol["zones"]]
             st.dataframe(pd.DataFrame(rows), use_container_width=True, height=260)
 
-        # Isı matrisi
         st.subheader("Gün × Saat Isı Matrisi")
         if st.session_state.get("agg") is not None and st.session_state.get("start_iso"):
-            render_day_hour_heatmap(
-                st.session_state["agg"],
-                st.session_state["start_iso"],
-                st.session_state["horizon_h"],
-            )
+            render_day_hour_heatmap(st.session_state["agg"],
+                                    st.session_state.get("start_iso"),
+                                    st.session_state.get("horizon_h"))
         else:
             st.caption("Isı matrisi, bir tahmin üretildiğinde gösterilir.")
 
