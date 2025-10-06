@@ -14,8 +14,9 @@ from utils.forecast import precompute_base_intensity, aggregate_fast, prob_ge_k
 from utils.patrol import allocate_patrols
 from utils.ui import SMALL_UI_CSS, render_result_card, build_map_fast, render_kpi_row
 from components.last_update import show_last_update_badge
+from utils.constants import SF_TZ_OFFSET, KEY_COL, MODEL_VERSION, MODEL_LAST_TRAIN
+from components.last_update import show_last_update_badge
 
-# 'utils' paketini bulamazsa çalışma dizinini ekleyip fallback yap
 try:
     from utils.reports import load_events
 except ModuleNotFoundError:
@@ -29,6 +30,21 @@ st.markdown(SMALL_UI_CSS, unsafe_allow_html=True)
 
 # ── Başlık ve "Son güncelleme" rozetini göster
 st.title("SUTAM: Suç Tahmin Modeli")
+
+try:
+    events_df = load_events("data/events.csv")
+    if not events_df.empty and "ts" in events_df.columns:
+        data_upto_val = pd.to_datetime(events_df["ts"]).max().date().isoformat()
+    else:
+        data_upto_val = None
+except Exception:
+    data_upto_val = None
+
+show_last_update_badge(
+    data_upto=data_upto_val,
+    model_version=MODEL_VERSION,
+    last_train=MODEL_LAST_TRAIN,
+)
 
 # ── Geo katmanı
 GEO_DF, GEO_FEATURES = load_geoid_layer("data/sf_cells.geojson")
