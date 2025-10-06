@@ -70,7 +70,7 @@ st.sidebar.divider()
 st.sidebar.header("Ayarlar")
 
 # Ufuk seçimi
-ufuk = st.sidebar.radio("Ufuk", options=["24s", "48s", "7g"], index=0, horizontal=True)
+ufuk = st.sidebar.radio("Zaman Aralığı (Şimdiden)", options=["24s", "48s", "7g"], index=0, horizontal=True)
 max_h, step = (24, 1) if ufuk == "24s" else (48, 3) if ufuk == "48s" else (7 * 24, 24)
 start_h, end_h = st.sidebar.slider(
     "Zaman aralığı (şimdiden + saat)",
