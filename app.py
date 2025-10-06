@@ -67,7 +67,7 @@ sekme = st.sidebar.radio("", options=["Operasyon", "Raporlar"], index=0, horizon
 st.sidebar.divider()
 
 # ---- GÜNCELLENEN KISIM ----
-st.sidebar.header("Devriye Parametreleri")
+st.sidebar.header("Ayarlar")
 
 # Ufuk seçimi
 ufuk = st.sidebar.radio("Ufuk", options=["24s", "48s", "7g"], index=0, horizontal=True)
