@@ -146,42 +146,41 @@ if sekme == "Operasyon":
             })
 
         agg = st.session_state["agg"]
-        if engine == "Folium":
-            m = build_map_fast(
-                agg, GEO_FEATURES, GEO_DF,
-                show_popups=show_popups,
-                patrol=st.session_state.get("patrol"),
-                show_poi=show_poi,
-                show_transit=show_transit,
-            )
-            ret = st_folium(
-                m, key="riskmap", height=540,
-                returned_objects=["last_object_clicked", "last_clicked"]
-            )
-            if ret:
-                gid, _ = resolve_clicked_gid(GEO_DF, ret)
-                if gid:
-                    st.session_state["explain"] = {"geoid": gid}
-        else:
-            deck = build_map_fast_deck(
-                agg, GEO_DF,
-                show_poi=show_poi,
-                show_transit=show_transit,
-                patrol=st.session_state.get("patrol"),
-            )
-            st.pydeck_chart(deck)
-            # Not: pydeck tarafında hücre tıklama -> açıklama kartı için
-            # pick event kablolaması ayrı yapılır; şimdilik sadece görüntüleme.
-
-            ret = st_folium(
-                m, key="riskmap", height=540,
-                returned_objects=["last_object_clicked", "last_clicked"]
-            )
-            if ret:
-                gid, _ = resolve_clicked_gid(GEO_DF, ret)
-                if gid:
-                    st.session_state["explain"] = {"geoid": gid}
-
+        
+        if agg is not None:
+            if engine == "Folium":
+                m = build_map_fast(
+                    agg, GEO_FEATURES, GEO_DF,
+                    show_popups=show_popups,
+                    patrol=st.session_state.get("patrol"),
+                    show_poi=show_poi,
+                    show_transit=show_transit,
+                )
+                # Güvenlik: st_folium'a gerçekten folium.Map gidiyor mu?
+                import folium
+                assert isinstance(m, folium.Map), f"st_folium beklediği tipte değil: {type(m)}"
+        
+                ret = st_folium(
+                    m, key="riskmap", height=540,
+                    returned_objects=["last_object_clicked", "last_clicked"]
+                )
+                if ret:
+                    gid, _ = resolve_clicked_gid(GEO_DF, ret)
+                    if gid:
+                        st.session_state["explain"] = {"geoid": gid}
+        
+            else:
+                deck = build_map_fast_deck(
+                    agg, GEO_DF,
+                    show_poi=show_poi,
+                    show_transit=show_transit,
+                    patrol=st.session_state.get("patrol"),
+                )
+                st.pydeck_chart(deck)
+                # Not: pydeck tarafında tıklama yakalama ayrı yapılır.
+                ret = None
+        
+            # Açıklama kartı
             start_iso  = st.session_state["start_iso"]
             horizon_h  = st.session_state["horizon_h"]
             info = st.session_state.get("explain")
@@ -189,9 +188,9 @@ if sekme == "Operasyon":
                 render_result_card(agg, info["geoid"], start_iso, horizon_h)
             else:
                 st.info("Haritada bir hücreye tıklayın veya listeden seçin; kart burada görünecek.")
+        
         else:
             st.info("Önce ‘Tahmin et’ ile bir tahmin üretin.")
-
     with col2:
         st.subheader("Risk Özeti", anchor=False)
 
