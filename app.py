@@ -11,8 +11,10 @@ from streamlit_folium import st_folium
 from utils.geo import load_geoid_layer, resolve_clicked_gid
 from utils.forecast import precompute_base_intensity, aggregate_fast, prob_ge_k
 from utils.patrol import allocate_patrols
-from utils.ui import SMALL_UI_CSS, render_result_card, build_map_fast, render_kpi_row
-from components.last_update import show_last_update_badge
+from utils.ui import (
+    SMALL_UI_CSS, render_result_card, build_map_fast, render_kpi_row,
+    render_day_hour_heatmap,  # <<< ısı matrisi
+)
 from utils.constants import (
     SF_TZ_OFFSET, KEY_COL,
     MODEL_VERSION, MODEL_LAST_TRAIN,
@@ -67,26 +69,29 @@ sekme = st.sidebar.radio("", options=["Operasyon", "Raporlar"], index=0, horizon
 st.sidebar.divider()
 
 # ---- GÜNCELLENEN KISIM ----
-st.sidebar.header("Ayarlar")
+st.sidebar.header("Devriye Parametreleri")
+
+# Harita katmanları
+st.sidebar.subheader("Harita katmanları")
+show_poi = st.sidebar.checkbox("POI overlay", value=False)
+show_transit = st.sidebar.checkbox("Toplu taşıma overlay", value=False)
 
 # Ufuk seçimi
-ufuk = st.sidebar.radio("Zaman Aralığı (Şimdiden)", options=["24s", "48s", "7g"], index=0, horizontal=True)
+ufuk = st.sidebar.radio("Zaman Aralığı (şimdiden)", options=["24s", "48s", "7g"], index=0, horizontal=True)
 max_h, step = (24, 1) if ufuk == "24s" else (48, 3) if ufuk == "48s" else (7 * 24, 24)
 start_h, end_h = st.sidebar.slider(
     "Saat filtresi",
     min_value=0, max_value=max_h, value=(0, max_h), step=step
 )
 
-# Sadece kategori filtresi kaldı
+# Kategori filtresi (Hepsi desteği ile)
 sel_categories = st.sidebar.multiselect(
     "Kategori",
-    ["(Hepsi)"] + CATEGORIES,   # <<< buraya hepsi eklendi
+    ["(Hepsi)"] + CATEGORIES,
     default=[]
 )
-
-# filtre logic
 if sel_categories and "(Hepsi)" in sel_categories:
-    filters = {"cats": CATEGORIES}   # tüm kategoriler seçili
+    filters = {"cats": CATEGORIES}   # tüm kategoriler
 else:
     filters = {"cats": sel_categories or None}
 
@@ -121,7 +126,7 @@ if sekme == "Operasyon":
             start_iso = start_dt.isoformat()
 
             events_df = load_events("data/events.csv")  # ts, lat, lon kolonları olmalı
-            
+
             # Tahmin (near-repeat parametreleri ile)
             agg = aggregate_fast(
                 start_iso, horizon_h, GEO_DF, BASE_INT,
@@ -132,7 +137,7 @@ if sekme == "Operasyon":
                 nr_decay_h=12.0,
                 filters=filters,
             )
-            
+
             st.session_state.update({
                 "agg": agg, "patrol": None, "start_iso": start_iso, "horizon_h": horizon_h
             })
@@ -142,7 +147,9 @@ if sekme == "Operasyon":
             m = build_map_fast(
                 agg, GEO_FEATURES, GEO_DF,
                 show_popups=show_popups,
-                patrol=st.session_state.get("patrol")
+                patrol=st.session_state.get("patrol"),
+                show_poi=show_poi,            # <<< overlay bayrakları eklendi
+                show_transit=show_transit,    # <<<
             )
             ret = st_folium(
                 m, key="riskmap", height=540,
@@ -165,14 +172,14 @@ if sekme == "Operasyon":
 
     with col2:
         st.subheader("Risk Özeti", anchor=False)
-    
+
         if st.session_state["agg"] is not None:
             a = st.session_state["agg"]
             kpi_expected = round(float(a["expected"].sum()), 2)
             high = int((a["tier"] == "Yüksek").sum())
             mid  = int((a["tier"] == "Orta").sum())
             low  = int((a["tier"] == "Hafif").sum())
-    
+
             render_kpi_row([
                 ("Beklenen olay (ufuk)", kpi_expected, "Seçili zaman ufkunda toplam beklenen olay sayısı"),
                 ("Yüksek",               high,         "Yüksek öncelikli hücre sayısı"),
@@ -184,25 +191,43 @@ if sekme == "Operasyon":
 
         st.subheader("En riskli bölgeler")
         if st.session_state["agg"] is not None:
+
             def top_risky_table(df_agg: pd.DataFrame, n: int = 12) -> pd.DataFrame:
+                # --- CI95 ve Saat sütunları dahil
+                def poisson_ci(lam: float, z: float = 1.96) -> tuple[float, float]:
+                    s = float(np.sqrt(max(lam, 1e-9)))
+                    return max(0.0, lam - z * s), lam + z * s
+
                 cols = [KEY_COL, "expected"]
                 if "nr_boost" in df_agg.columns:
                     cols.append("nr_boost")
-            
+
                 tab = (
                     df_agg[cols]
                     .sort_values("expected", ascending=False)
                     .head(n).reset_index(drop=True)
                 )
-            
+
                 lam = tab["expected"].to_numpy()
                 tab["P(≥1)%"] = [round(prob_ge_k(l, 1) * 100, 1) for l in lam]
-            
+
+                # Saat (başlangıç)
+                start_iso_val = st.session_state.get("start_iso")
+                try:
+                    start_hh = pd.to_datetime(start_iso_val).strftime("%H:00") if start_iso_val else "-"
+                except Exception:
+                    start_hh = "-"
+                tab["Saat"] = start_hh
+
+                # CI95
+                ci_vals = [poisson_ci(float(l)) for l in lam]
+                tab["CI95"] = [f"[{lo:.2f}, {hi:.2f}]" for lo, hi in ci_vals]
+
                 if "nr_boost" in tab.columns:
                     tab["NR"] = tab["nr_boost"].round(2)
-            
+
                 tab["E[olay] (λ)"] = tab["expected"].round(2)
-            
+
                 drop_cols = ["expected"]
                 if "nr_boost" in tab.columns:
                     drop_cols.append("nr_boost")
@@ -230,6 +255,17 @@ if sekme == "Operasyon":
                 "avg_risk(E[olay])": round(z["expected_risk"], 2),
             } for z in patrol["zones"]]
             st.dataframe(pd.DataFrame(rows), use_container_width=True, height=260)
+
+        # Isı matrisi
+        st.subheader("Gün × Saat Isı Matrisi")
+        if st.session_state.get("agg") is not None and st.session_state.get("start_iso"):
+            render_day_hour_heatmap(
+                st.session_state["agg"],
+                st.session_state["start_iso"],
+                st.session_state["horizon_h"],
+            )
+        else:
+            st.caption("Isı matrisi, bir tahmin üretildiğinde gösterilir.")
 
         st.subheader("Dışa aktar")
         if st.session_state["agg"] is not None:
