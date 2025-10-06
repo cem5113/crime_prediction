@@ -94,6 +94,7 @@ if sel_categories and "(Hepsi)" in sel_categories:
     filters = {"cats": CATEGORIES}   # tüm kategoriler
 else:
     filters = {"cats": sel_categories or None}
+show_advanced = st.sidebar.checkbox("Gelişmiş metrikleri göster (analist)", value=False)
 
 st.sidebar.divider()
 st.sidebar.subheader("Devriye Parametreleri")
@@ -192,25 +193,25 @@ if sekme == "Operasyon":
         st.subheader("En riskli bölgeler")
         if st.session_state["agg"] is not None:
 
-            def top_risky_table(df_agg: pd.DataFrame, n: int = 12) -> pd.DataFrame:
-                # --- CI95 ve Saat sütunları dahil
+            def top_risky_table(df_agg: pd.DataFrame, n: int = 12, show_ci: bool = False) -> pd.DataFrame:
+                # Poisson ~%95 güven aralığı (normal approx.)
                 def poisson_ci(lam: float, z: float = 1.96) -> tuple[float, float]:
                     s = float(np.sqrt(max(lam, 1e-9)))
                     return max(0.0, lam - z * s), lam + z * s
-
+            
                 cols = [KEY_COL, "expected"]
                 if "nr_boost" in df_agg.columns:
                     cols.append("nr_boost")
-
+            
                 tab = (
                     df_agg[cols]
                     .sort_values("expected", ascending=False)
                     .head(n).reset_index(drop=True)
                 )
-
+            
                 lam = tab["expected"].to_numpy()
                 tab["P(≥1)%"] = [round(prob_ge_k(l, 1) * 100, 1) for l in lam]
-
+            
                 # Saat (başlangıç)
                 start_iso_val = st.session_state.get("start_iso")
                 try:
@@ -218,22 +219,30 @@ if sekme == "Operasyon":
                 except Exception:
                     start_hh = "-"
                 tab["Saat"] = start_hh
-
-                # CI95
-                ci_vals = [poisson_ci(float(l)) for l in lam]
-                tab["CI95"] = [f"[{lo:.2f}, {hi:.2f}]" for lo, hi in ci_vals]
-
+            
+                # 95% Güven Aralığı (isteğe bağlı)
+                if show_ci:
+                    ci_vals = [poisson_ci(float(l)) for l in lam]
+                    tab["95% Güven Aralığı"] = [f"[{lo:.2f}, {hi:.2f}]" for lo, hi in ci_vals]
+            
                 if "nr_boost" in tab.columns:
                     tab["NR"] = tab["nr_boost"].round(2)
-
+            
                 tab["E[olay] (λ)"] = tab["expected"].round(2)
-
+            
                 drop_cols = ["expected"]
                 if "nr_boost" in tab.columns:
                     drop_cols.append("nr_boost")
                 return tab.drop(columns=drop_cols)
-
-            st.dataframe(top_risky_table(st.session_state["agg"]), use_container_width=True, height=300)
+            st.dataframe(
+                top_risky_table(st.session_state["agg"], show_ci=show_advanced),
+                use_container_width=True, height=300
+            )
+            if show_advanced:
+                st.caption(
+                    "95% Güven Aralığı: Aynı koşullar tekrarlansa, gerçek sayının ~%95 bu aralıkta kalması beklenir. "
+                    "Hızlı hesap: λ ± 1.96·√λ (alt sınır 0'a kırpılır)."
+                )
 
         st.subheader("Devriye özeti")
         if st.session_state.get("agg") is not None and btn_patrol:
