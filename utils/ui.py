@@ -265,7 +265,10 @@ def build_map_fast(
     geo_features: list,
     geo_df: pd.DataFrame,
     show_popups: bool = False,
-    patrol: Dict | None = None
+    patrol: Dict | None = None,
+    *,
+    show_poi: bool = False,         # <<< eklendi
+    show_transit: bool = False,     # <<< eklendi
 ) -> folium.Map:
     m = folium.Map(location=[37.7749, -122.4194], zoom_start=12, tiles="cartodbpositron")
     if df_agg is None or df_agg.empty:
@@ -314,6 +317,85 @@ def build_map_fast(
 
     folium.GeoJson(fc, style_function=style_fn, tooltip=tooltip, popup=popup).add_to(m)
 
+    # Küçük yardımcı: listedeki ilk var olan dosyayı oku
+    def _read_first_existing_csv(paths: list[str]) -> pd.DataFrame | None:
+        for p in paths:
+            try:
+                return pd.read_csv(p)
+            except Exception:
+                continue
+        return None
+
+    # --- POI overlay
+    if show_poi:
+        try:
+            poi_df = _read_first_existing_csv([
+                "data/sf_pois_cleaned_with_geoid.csv",
+                "data/poi.csv",
+            ])
+            if poi_df is not None and not poi_df.empty:
+                lat_col = "latitude" if "latitude" in poi_df.columns else ("lat" if "lat" in poi_df.columns else None)
+                lon_col = "longitude" if "longitude" in poi_df.columns else ("lon" if "lon" in poi_df.columns else None)
+                if lat_col and lon_col:
+                    fg_poi = folium.FeatureGroup(name="POI", show=True)
+                    # performans için sınırlama
+                    for _, r in poi_df.head(2000).iterrows():
+                        folium.CircleMarker(
+                            location=[float(r[lat_col]), float(r[lon_col])],
+                            radius=2, color="#3b82f6", fill=True, fill_color="#3b82f6", fill_opacity=0.6, opacity=0.7
+                        ).add_to(fg_poi)
+                    fg_poi.add_to(m)
+        except Exception:
+            pass  # veri yoksa sessiz geç
+
+    # --- Transit overlay
+    if show_transit:
+        try:
+            # varsa otobüs ve tren dosyalarını ayrı ayrı ekle
+            bus_df = _read_first_existing_csv([
+                "data/sf_bus_stops_with_geoid.csv",
+                "data/sf_bus_stops.csv",
+                "data/transit_bus_stops.csv",
+            ])
+            train_df = _read_first_existing_csv([
+                "data/sf_train_stops_with_geoid.csv",
+                "data/sf_train_stops.csv",
+                "data/transit_train_stops.csv",
+            ])
+            fg_tr = folium.FeatureGroup(name="Transit", show=True)
+
+            if bus_df is not None and not bus_df.empty:
+                blat = "latitude" if "latitude" in bus_df.columns else ("lat" if "lat" in bus_df.columns else None)
+                blon = "longitude" if "longitude" in bus_df.columns else ("lon" if "lon" in bus_df.columns else None)
+                if blat and blon:
+                    for _, r in bus_df.head(2000).iterrows():
+                        folium.CircleMarker(
+                            location=[float(r[blat]), float(r[blon])],
+                            radius=1.6, color="#10b981", fill=True, fill_color="#10b981", fill_opacity=0.55, opacity=0.6
+                        ).add_to(fg_tr)
+
+            if train_df is not None and not train_df.empty:
+                tlat = "latitude" if "latitude" in train_df.columns else ("lat" if "lat" in train_df.columns else None)
+                tlon = "longitude" if "longitude" in train_df.columns else ("lon" if "lon" in train_df.columns else None)
+                if tlat and tlon:
+                    for _, r in train_df.head(1500).iterrows():
+                        folium.CircleMarker(
+                            location=[float(r[tlat]), float(r[tlon])],
+                            radius=2.2, color="#ef4444", fill=True, fill_color="#ef4444", fill_opacity=0.6, opacity=0.75
+                        ).add_to(fg_tr)
+
+            if len(getattr(fg_tr, "_children", {})) > 0:
+                fg_tr.add_to(m)
+        except Exception:
+            pass
+
+    # Katman kontrolü
+    try:
+        folium.LayerControl(collapsed=True).add_to(m)
+    except Exception:
+        pass
+
+
     # Üst %1 uyarı
     thr99 = np.quantile(df_agg["expected"].to_numpy(), 0.99)
     urgent = df_agg[df_agg["expected"] >= thr99].merge(
@@ -336,3 +418,37 @@ def build_map_fast(
             ).add_to(m)
 
     return m
+
+
+# ───────────── Gün × Saat Isı Matrisi ─────────────
+def render_day_hour_heatmap(agg: pd.DataFrame, start_iso: str, horizon_h: int):
+    """
+    Ufuk boyunca toplam beklenen olayı (agg['expected'].sum()) saatlere dağıtır
+    ve (Gün x Saat) ısı matrisi olarak gösterir. Dağıtım forecast'teki diurnal
+    profile ile ağırlıklandırılır. Ufuk 24 saati aşarsa birden fazla güne yayılır.
+    """
+    if agg is None or agg.empty or horizon_h is None:
+        st.caption("Isı matrisi için veri yok.")
+        return
+
+    start = pd.to_datetime(start_iso)
+    hours = np.arange(int(horizon_h))
+    # Forecast'teki diurnal fonksiyonu ile uyumlu
+    diurnal = 1.0 + 0.4 * np.sin((((start.hour + hours) % 24 - 18) / 24) * 2 * np.pi)
+    w = diurnal / (diurnal.sum() + 1e-12)
+
+    total_expected = float(agg["expected"].sum())
+
+    # 7x24 matris hazırla
+    dow_labels = ["Mon","Tue","Wed","Thu","Fri","Sat","Sun"]
+    mat = pd.DataFrame(0.0, index=dow_labels, columns=[f"{h:02d}" for h in range(24)])
+
+    # Her saat dilimine dağıt ve ilgili (gün, saat) hücresine ekle
+    for h, weight in enumerate(w):
+        dt = start + timedelta(hours=int(h))
+        dow = dow_labels[dt.dayofweek]
+        hr  = f"{dt.hour:02d}"
+        mat.loc[dow, hr] += total_expected * float(weight)
+
+    st.dataframe(mat.round(2), use_container_width=True)
+
