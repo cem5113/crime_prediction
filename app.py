@@ -11,11 +11,18 @@ from streamlit_folium import st_folium
 from utils.geo import load_geoid_layer, resolve_clicked_gid
 from utils.forecast import precompute_base_intensity, aggregate_fast, prob_ge_k
 from utils.patrol import allocate_patrols
-from utils.ui import (
-    SMALL_UI_CSS, render_result_card, build_map_fast, render_kpi_row,
-    render_day_hour_heatmap,  # <<< ısı matrisi
-    build_map_fast_deck,
-)
+from utils.ui import SMALL_UI_CSS, render_result_card, build_map_fast, render_kpi_row
+
+try:
+    from utils.heatmap import render_day_hour_heatmap
+except Exception:
+    # ui.py içindeyse şu alternatife izin ver
+    from utils.ui import render_day_hour_heatmap 
+try:
+    from utils.deck import build_map_fast_deck
+except Exception:
+    # ui.py içindeyse şu alternatife izin ver
+    from utils.ui import build_map_fast_deck     
 from utils.constants import (
     SF_TZ_OFFSET, KEY_COL,
     MODEL_VERSION, MODEL_LAST_TRAIN,
