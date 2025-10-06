@@ -274,6 +274,68 @@ def build_map_fast(
     if df_agg is None or df_agg.empty:
         return m
 
+def render_day_hour_heatmap(agg: pd.DataFrame, start_iso: str | None = None, horizon_h: int | None = None):
+    """
+    Basit ısı matrisi:
+      - Eğer agg zaten 'dow' (Mon..Sun) ve 'hour' (0..23) kolonlarını içeriyorsa, direkt pivotlar.
+      - Değilse ve start_iso & horizon_h verilmişse, toplam 'expected'ı forecast’teki diurnal profile göre
+        saatlere dağıtır, her saat için (gün, saat) hücresine ekler.
+      - Hiçbiri yoksa varsayılan olarak 24 saatlik bir dağıtım yapar.
+    """
+    import streamlit as st
+    import numpy as np
+    import pandas as pd
+    from datetime import timedelta
+
+    if agg is None or agg.empty:
+        st.caption("Isı matrisi için veri yok.")
+        return
+
+    # 1) Eğer agg’de hazır 'dow' ve 'hour' varsa doğrudan pivot
+    if {"dow", "hour"}.issubset(agg.columns):
+        mat = (
+            agg.pivot_table(index="dow", columns="hour", values="expected", aggfunc="sum")
+               .reindex(index=["Mon","Tue","Wed","Thu","Fri","Sat","Sun"], fill_value=0.0)
+               .reindex(columns=list(range(24)), fill_value=0.0)
+        )
+        st.dataframe(mat.round(2), use_container_width=True)
+        return
+
+    # 2) Aksi halde: start_iso & horizon_h ile saatlere dağıt
+    if start_iso is not None and horizon_h is not None:
+        start = pd.to_datetime(start_iso)
+        hours = np.arange(int(horizon_h))
+        # forecast’te kullanılan diurnal ile tutarlı
+        diurnal = 1.0 + 0.4 * np.sin((((start.hour + hours) % 24 - 18) / 24) * 2 * np.pi)
+        w = diurnal / (diurnal.sum() + 1e-12)
+
+        total_expected = float(agg["expected"].sum())
+
+        dow_labels = ["Mon","Tue","Wed","Thu","Fri","Sat","Sun"]
+        mat = pd.DataFrame(0.0, index=dow_labels, columns=list(range(24)))
+
+        for h, weight in enumerate(w):
+            dt = start + timedelta(hours=int(h))
+            mat.loc[dow_labels[dt.dayofweek], dt.hour] += total_expected * float(weight)
+
+        st.dataframe(mat.round(2), use_container_width=True)
+        return
+
+    # 3) Fallback: 24 saat varsayılan dağıtım (başlangıç şimdi varsayımı)
+    start = pd.Timestamp.utcnow()
+    hours = np.arange(24)
+    diurnal = 1.0 + 0.4 * np.sin((((start.hour + hours) % 24 - 18) / 24) * 2 * np.pi)
+    w = diurnal / (diurnal.sum() + 1e-12)
+    total_expected = float(agg["expected"].sum())
+
+    dow_labels = ["Mon","Tue","Wed","Thu","Fri","Sat","Sun"]
+    mat = pd.DataFrame(0.0, index=dow_labels, columns=list(range(24)))
+    for h, weight in enumerate(w):
+        dt = start + timedelta(hours=int(h))
+        mat.loc[dow_labels[dt.dayofweek], dt.hour] += total_expected * float(weight)
+
+    st.dataframe(mat.round(2), use_container_width=True)
+  
     color_map = {r[KEY_COL]: color_for_tier(r["tier"]) for _, r in df_agg.iterrows()}
     data_map = df_agg.set_index(KEY_COL).to_dict(orient="index")
 
