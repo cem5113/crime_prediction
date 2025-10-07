@@ -284,13 +284,18 @@ def build_map_fast(
     *,
     show_poi: bool = False,
     show_transit: bool = False,
-    # 🔻 yeni parametreler
-    show_hotspot: bool = False,                 # Kalıcı hotspot (uzun dönem)
-    show_temp_hotspot: bool = False,            # Geçici hotspot (son T saat)
-    temp_hotspot_points: pd.DataFrame | None = None,  # [latitude, longitude, weight]
-    selected_type: str | None = None            # None/"all" => expected; yoksa seçili kategori (örn. "assault")
+    # 🔻 hotspot parametreleri
+    show_hotspot: bool = False,                         # kalıcı hotspot
+    show_temp_hotspot: bool = False,                    # geçici hotspot
+    temp_hotspot_points: pd.DataFrame | None = None,    # [latitude, longitude, weight]
+    selected_type: str | None = None,                   # None/"all" => expected; aksi halde seçili kategori
+    # 🔻 mod/analiz parametreleri (YENİ)
+    perm_hotspot_mode: str = "markers",                 # "markers" | "heat"
+    show_anomaly: bool = False,                         # geçici–kalıcı farkını vurgula
+    base_metric_for_anom: str | None = None,            # None => "expected"
+    temp_scores_col: str = "hotspot_score",             # df_agg’te geçici skor sütunu adı
+    anom_thr: float = 0.25                              # anomali eşiği (0–1 arası)
 ) -> folium.Map:
-    m = folium.Map(location=[37.7749, -122.4194], zoom_start=12, tiles="cartodbpositron")
 
     if df_agg is None or df_agg.empty:
         return m
@@ -478,23 +483,41 @@ def build_map_fast(
                 fg_tr.add_to(m)
         except Exception:
             pass
-
+    
     # === Kalıcı hotspot katmanı (kategoriye duyarlı) ===
     if show_hotspot:
         try:
+            # 1) Hangi metrik? (seçili kategori varsa o; yoksa expected)
             metric_col = None
-            # seçili kategori df_agg'ta varsa onu kullan; yoksa expected
             if selected_type and selected_type in df_agg.columns:
                 metric_col = selected_type
             elif "expected" in df_agg.columns:
                 metric_col = "expected"
-
-            if metric_col:
+            if not metric_col:
+                raise ValueError("Kalıcı hotspot için uygun metrik bulunamadı.")
+    
+            if perm_hotspot_mode == "heat":
+                # 2a) HEATMAP modu (#4. fotodaki gibi)
+                centers = df_agg.merge(
+                    geo_df[[KEY_COL, "centroid_lat", "centroid_lon"]],
+                    on=KEY_COL, how="left"
+                )
+                if not centers.empty:
+                    w = centers[metric_col].clip(lower=0).to_numpy()
+                    pts = centers[["centroid_lat", "centroid_lon"]].copy()
+                    pts["weight"] = w
+                    HeatMap(
+                        pts[["centroid_lat", "centroid_lon", "weight"]].values.tolist(),
+                        name=("Kalıcı Hotspot (ısı)" if not selected_type or selected_type in ("all", None)
+                              else f"Kalıcı Hotspot (ısı) · {selected_type}"),
+                        radius=24, blur=28, max_zoom=16
+                    ).add_to(m)
+            else:
+                # 2b) MARKER modu (mevcut davranış: üst %10)
                 thr = float(np.quantile(df_agg[metric_col].to_numpy(), 0.90))
                 strong = df_agg[df_agg[metric_col] >= thr].merge(
                     geo_df[[KEY_COL, "centroid_lat", "centroid_lon"]],
-                    on=KEY_COL,
-                    how="left",
+                    on=KEY_COL, how="left",
                 )
                 if not strong.empty:
                     layer_name = (
@@ -506,27 +529,40 @@ def build_map_fast(
                     for _, r in strong.iterrows():
                         folium.CircleMarker(
                             [float(r["centroid_lat"]), float(r["centroid_lon"])],
-                            radius=4,
-                            color="#8b0000",
-                            fill=True,
-                            fill_color="#8b0000",
-                            fill_opacity=0.5,
-                            opacity=0.8,
+                            radius=4, color="#8b0000",
+                            fill=True, fill_color="#8b0000",
+                            fill_opacity=0.5, opacity=0.8
                         ).add_to(fg_perm)
                     fg_perm.add_to(m)
         except Exception:
             pass
 
-    # === Geçici hotspot katmanı (son T saat ısı haritası) ===
-    if show_temp_hotspot and temp_hotspot_points is not None and not temp_hotspot_points.empty:
+    # === Anomali: Geçici – Kalıcı farkı ===
+    if show_anomaly and temp_scores_col in df_agg.columns:
         try:
-            cols = {c.lower(): c for c in temp_hotspot_points.columns}
-            lat = cols.get("latitude") or cols.get("lat")
-            lon = cols.get("longitude") or cols.get("lon")
-            w = cols.get("weight")
-            if lat and lon:
-                pts = temp_hotspot_points[[lat, lon] + ([w] if w else [])].values.tolist()
-                HeatMap(pts, name="Geçici Hotspot", radius=16, blur=24, max_zoom=16).add_to(m)
+            base_col = base_metric_for_anom or ("expected" if "expected" in df_agg.columns else None)
+            if base_col:
+                # min–max normalize (taban ve geçici skoru aynı ölçeğe çek)
+                b = df_agg[base_col].to_numpy()
+                t = df_agg[temp_scores_col].to_numpy()
+                b_norm = (b - b.min()) / (b.max() - b.min() + 1e-12)
+                t_norm = (t - t.min()) / (t.max() - t.min() + 1e-12)
+                delta = t_norm - b_norm
+    
+                anom = df_agg.assign(_delta=delta)
+                anom = anom[anom["_delta"] >= float(anom_thr)].merge(
+                    geo_df[[KEY_COL, "centroid_lat", "centroid_lon"]],
+                    on=KEY_COL, how="left"
+                )
+                if not anom.empty:
+                    fg_anom = folium.FeatureGroup(name="Anomali (geçici–kalıcı)", show=True)
+                    for _, r in anom.iterrows():
+                        folium.CircleMarker(
+                            [float(r["centroid_lat"]), float(r["centroid_lon"])],
+                            radius=6, color="#000",
+                            fill=True, fill_color="#ffd60a", fill_opacity=0.85
+                        ).add_to(fg_anom)
+                    fg_anom.add_to(m)
         except Exception:
             pass
 
