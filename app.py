@@ -341,7 +341,7 @@ if sekme == "Operasyon":
                 ret = st_folium(
                     m, key="riskmap",
                     width=1100,        # ← EN (px)
-                    height=680,        # ← BOY (px) istersen sabit bırak
+                    height=540,        # ← BOY (px) istersen sabit bırak
                     returned_objects=["last_object_clicked", "last_clicked"]
                 )
                 if ret:
