@@ -474,6 +474,12 @@ if sekme == "Operasyon":
                 file_name=f"risk_export_{int(time.time())}.csv",
                 mime="text/csv"
             )
+if "events" not in st.session_state:
+    st.session_state["events"] = pd.DataFrame({
+        "ts": pd.date_range("2025-10-01", periods=50, freq="H"),
+        "type": ["Theft"]*25 + ["Assault"]*25,
+        "geoid": ["12345"]*50
+    })
 
 # ── Raporlar
 else:
