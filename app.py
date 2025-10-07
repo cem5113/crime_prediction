@@ -327,8 +327,6 @@ if sekme == "Operasyon":
                     geo_df=GEO_DF,
                     show_popups=show_popups,
                     patrol=st.session_state.get("patrol"),
-                    show_poi=show_poi,
-                    show_transit=show_transit,
                 
                     show_hotspot=show_hotspot,         
                     perm_hotspot_mode="heat",
