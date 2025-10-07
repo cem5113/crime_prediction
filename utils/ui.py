@@ -10,7 +10,13 @@ import folium
 from folium.plugins import HeatMap
 import streamlit as st
 
-from utils.constants import KEY_COL, CRIME_TYPES
+# 🔒 KEY_COL / CRIME_TYPES: güvenli import + fallback
+try:
+    from utils.constants import KEY_COL, CRIME_TYPES
+except Exception:
+    KEY_COL = "GEOID"
+    CRIME_TYPES = []
+
 from utils.forecast import pois_pi90
 
 __all__ = [
@@ -323,9 +329,45 @@ def build_map_fast(
         localize=True, sticky=False
     ) if show_popups else None)
 
-    popup = (folium.GeoJsonPopup(
-        fields=["popup_html"], labels=False, parse_html=False, max_width=280
-    ) if show_popups else None)
+ID_PROP_KEY = "id"  # eğer GeoJSON'unuzda "geoid" kullanılıyorsa burayı "geoid" yapın
+
+# FeatureCollection içindeki özelliklerde id anahtarını normalize et
+for f in fc.get("features", []):
+    props = f.get("properties", {})
+    if ID_PROP_KEY not in props:
+        # "geoid" varsa id'ye kopyala
+        if "geoid" in props and "id" not in props:
+            props["id"] = props["geoid"]
+        # hiçbiri yoksa sahte id atayın ki tooltip NameError/KeyError’a düşmesin
+        if "id" not in props:
+            props["id"] = props.get("GEOID", "NA")
+
+    # tooltip/popup güvenli tanım (koşullu)
+    tooltip = None
+    popup = None
+    if show_popups:
+        try:
+            tooltip = folium.GeoJsonTooltip(
+                fields=["id", "tier", "expected"],
+                aliases=["GEOID", "Öncelik", "E[olay]"],
+                localize=True, sticky=False
+            )
+        except Exception:
+            tooltip = None
+        try:
+            popup = folium.GeoJsonPopup(
+                fields=["popup_html"],
+                labels=False, parse_html=False, max_width=280
+            )
+        except Exception:
+            popup = None
+    
+    # GeoJson'u güvenli biçimde ekle
+    try:
+        folium.GeoJson(fc, style_function=style_fn, tooltip=tooltip, popup=popup).add_to(m)
+    except NameError:
+        # Olası tanım hatalarında en azından katman çizilsin
+        folium.GeoJson(fc, style_function=style_fn).add_to(m)
 
     folium.GeoJson(fc, style_function=style_fn, tooltip=tooltip, popup=popup).add_to(m)
 
