@@ -347,7 +347,8 @@ def build_map_fast(
 
     # --- Style function: sadece stil dict'i döndürür ---
     def style_fn(feat):
-        gid = str(feat.get("properties", {}).get("id"))
+        gid_val = feat.get("properties", {}).get("id")
+        gid = str(gid_val) if gid_val is not None else None
         return {
             "fillColor": color_map.get(gid, "#9ecae1"),
             "color": "#666666",
@@ -374,11 +375,10 @@ def build_map_fast(
             gj_kwargs["popup"] = pp
         except Exception:
             pass
-    
-    # ✅ İsmi olan bir katmana koy (LayerControl’da “macro_element_div_1” yerine “Risk Hücreleri” görünsün)
+
     fg_cells = folium.FeatureGroup(name="Risk Hücreleri", show=True)
     try:
-        folium.GeoJson(fc, **gj_kwargs).add_to(fg_cells)
+        folium.GeoJson(fc, style_function=style_fn, tooltip=tt, popup=pp).add_to(fg_cells)
     except Exception:
         folium.GeoJson(fc, style_function=style_fn).add_to(fg_cells)
     fg_cells.add_to(m)
@@ -507,7 +507,22 @@ def build_map_fast(
                 fg_temp.add_to(m)
         except Exception:
             pass
-        
+
+    # === Geçici hotspot katmanı (son T saat ısı haritası) ===
+    if show_temp_hotspot and temp_hotspot_points is not None and not temp_hotspot_points.empty:
+        try:
+            cols = {c.lower(): c for c in temp_hotspot_points.columns}
+            lat = cols.get("latitude") or cols.get("lat")
+            lon = cols.get("longitude") or cols.get("lon")
+            w   = cols.get("weight")
+            if lat and lon:
+                pts = temp_hotspot_points[[lat, lon] + ([w] if w else [])].values.tolist()
+                fg_temp = folium.FeatureGroup(name="Geçici Hotspot", show=True)
+                HeatMap(pts, radius=16, blur=24, max_zoom=16).add_to(fg_temp)
+                fg_temp.add_to(m)
+        except Exception:
+            pass
+            
     # === Kalıcı hotspot katmanı (kategoriye duyarlı) ===
     if show_hotspot:
         try:
@@ -530,12 +545,14 @@ def build_map_fast(
                     w = centers[metric_col].clip(lower=0).to_numpy()
                     pts = centers[["centroid_lat", "centroid_lon"]].copy()
                     pts["weight"] = w
+                    layer_name = ("Kalıcı Hotspot (ısı)" if not selected_type or selected_type in ("all", None)
+                                  else f"Kalıcı Hotspot (ısı) · {selected_type}")
+                    fg_perm_heat = folium.FeatureGroup(name=layer_name, show=True)
                     HeatMap(
                         pts[["centroid_lat", "centroid_lon", "weight"]].values.tolist(),
-                        name=("Kalıcı Hotspot (ısı)" if not selected_type or selected_type in ("all", None)
-                              else f"Kalıcı Hotspot (ısı) · {selected_type}"),
                         radius=24, blur=28, max_zoom=16
-                    ).add_to(m)
+                    ).add_to(fg_perm_heat)
+                    fg_perm_heat.add_to(m)
             else:
                 # 2b) MARKER modu (mevcut davranış: üst %10)
                 thr = float(np.quantile(df_agg[metric_col].to_numpy(), 0.90))
