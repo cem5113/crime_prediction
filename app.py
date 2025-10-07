@@ -13,6 +13,7 @@ from utils.forecast import precompute_base_intensity, aggregate_fast, prob_ge_k
 from utils.patrol import allocate_patrols
 from utils.ui import SMALL_UI_CSS, render_result_card, build_map_fast, render_kpi_row
 from utils.hotspots import temp_hotspot_scores
+from components.report_view import render_reports
 
 # Isı matrisi: ayrı modül varsa oradan, yoksa ui'dan
 try:
@@ -49,13 +50,15 @@ st.title("SUTAM: Suç Tahmin Modeli")
 
 try:
     events_df = load_events("data/events.csv")
-    if "events_df" not in st.session_state and isinstance(events_df, pd.DataFrame) and not events_df.empty:
-        st.session_state["events_df"] = events_df
-    if not events_df.empty and "ts" in events_df.columns:
+    # Boş olsa bile state'e yaz (raporlar güvenli çalışsın)
+    st.session_state["events_df"] = events_df if isinstance(events_df, pd.DataFrame) else None
+
+    if isinstance(events_df, pd.DataFrame) and not events_df.empty and "ts" in events_df.columns:
         data_upto_val = pd.to_datetime(events_df["ts"]).max().date().isoformat()
     else:
         data_upto_val = None
 except Exception:
+    st.session_state["events_df"] = None
     data_upto_val = None
 
 show_last_update_badge(
@@ -171,6 +174,23 @@ if sekme == "Operasyon":
                 "horizon_h": horizon_h,
                 "events": events_df,  # 🔹 geçici hotspot için son olaylara ihtiyaç var
             })
+
+            # >>> (OPSİYONEL) Uzun dönem referans λ: son 30 gün
+            try:
+                long_start_iso = (
+                    datetime.utcnow()
+                    + timedelta(hours=SF_TZ_OFFSET - 30*24)
+                ).replace(minute=0, second=0, microsecond=0).isoformat()
+
+                agg_long = aggregate_fast(
+                    long_start_iso, 30*24, GEO_DF, BASE_INT,
+                    events=events_df,          # burada local events_df'i kullanıyoruz
+                    near_repeat_alpha=0.0,     # referans için NR etkisini kapatmak isteyebilirsin
+                    filters=None
+                )
+                st.session_state["agg_long"] = agg_long
+            except Exception:
+                st.session_state["agg_long"] = None
 
         agg = st.session_state["agg"]
 
@@ -518,14 +538,16 @@ if sekme == "Operasyon":
 
 # ── Raporlar
 else:
-    st.header("Raporlar")
+    # Kısa dönem: mevcut ufuk için λ tablosu
+    agg_current = st.session_state.get("agg")
+    # Uzun dönem referans λ (opsiyonel): varsa state'te tut (yoksa None)
+    agg_long    = st.session_state.get("agg_long")
 
-    ev = st.session_state.get("events_df")
-    if not isinstance(ev, pd.DataFrame) or ev.empty:
-        st.info("Olay veri seti yüklenemedi veya boş.")
-    else:
-        ev = ev.copy()
-
+    render_reports(
+        events_df     = st.session_state.get("events_df"),
+        agg_current   = agg_current,
+        agg_long_term = agg_long,
+    )
         # Zaman sütununu normalize et
         ts_col = "ts" if "ts" in ev.columns else ("timestamp" if "timestamp" in ev.columns else None)
         if ts_col is None:
