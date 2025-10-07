@@ -428,7 +428,7 @@ if sekme == "Operasyon":
             low  = int((a["tier"] == "Hafif").sum())
 
             render_kpi_row([
-                ("Beklenen olay (ufuk)", kpi_expected, "Seçili zaman ufkunda toplam beklenen olay sayısı"),
+                ("Beklenen Suç Sayısı", kpi_expected, "Seçili zaman ufkunda toplam beklenen olay sayısı"),
                 ("Yüksek",               high,         "Yüksek öncelikli hücre sayısı"),
                 ("Orta",                 mid,          "Orta öncelikli hücre sayısı"),
                 ("Düşük",                low,          "Düşük öncelikli hücre sayısı"),
