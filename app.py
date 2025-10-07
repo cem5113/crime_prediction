@@ -374,16 +374,23 @@ if sekme == "Operasyon":
                     ev_recent = pd.DataFrame(columns=["latitude","longitude","weight"])
                 
                 m = build_map_fast(
-                    df_agg=df_agg_for_map,
+                    # risk katmanı her zaman gönderilsin ki harita üstünde gizleyip/açabilelim
+                    df_agg=agg,
                     geo_features=GEO_FEATURES,
                     geo_df=GEO_DF,
                     show_popups=show_popups,
                     patrol=st.session_state.get("patrol"),
                 
-                    show_hotspot=show_perm_hotspot,
-                    perm_hotspot_mode="heat",
+                    # ↓ yeni parametreler: harita ÜZERİNDEki menüde varsayılan görünürlük
+                    add_layer_control=True,
+                    risk_layer_show=show_risk_layer,
+                    perm_hotspot_show=show_perm_hotspot,
+                    temp_hotspot_show=show_temp_hotspot,
+                    risk_layer_name="Tahmin katmanı (risk)",
+                    perm_hotspot_layer_name="Sıcak nokta (kalıcı)",
+                    temp_hotspot_layer_name="Geçici sıcak nokta (son olaylar)",
                 
-                    show_temp_hotspot=show_temp_hotspot,
+                    # geçici hotspot noktaları
                     temp_hotspot_points=temp_points_effective,
                 )
 
