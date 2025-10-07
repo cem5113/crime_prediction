@@ -137,7 +137,7 @@ max_h, step = (24, 1) if ufuk == "24s" else (48, 3) if ufuk == "48s" else (7*24,
 start_h, end_h = st.sidebar.slider("Saat filtresi", min_value=0, max_value=max_h, value=(0, max_h), step=step)
 
 # Kategori filtresi (tahmin motoru için)
-sel_categories = st.sidebar.multiselect("Kategori", ["(Hepsi)"] + CATEGORIES, default=[])
+sel_categories = st.sidebar.multiselect("Suç Tahmini İçin Kategori", ["(Hepsi)"] + CATEGORIES, default=[])
 if sel_categories and "(Hepsi)" in sel_categories:
     filters = {"cats": CATEGORIES}
 else:
