@@ -3,6 +3,21 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 import streamlit as st
+import os, sys
+
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, PROJECT_ROOT)
+
+try:
+    # Tercih edilen: paket importu (utils bir paket ise)
+    from utils.reports import normalize_events_ts
+except ModuleNotFoundError:
+    # Fallback: doğrudan utils klasörünü ekleyip reports.py'yi import et
+    utils_dir = os.path.join(PROJECT_ROOT, "utils")
+    if utils_dir not in sys.path:
+        sys.path.insert(0, utils_dir)
+    from reports import normalize_events_ts  # utils/reports.py
 
 # İsteğe bağlı: SHAP varsa global önem grafiği gösterecek
 try:
