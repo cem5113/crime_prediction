@@ -166,7 +166,7 @@ if "agg" not in st.session_state:
 
 # ── Operasyon
 if sekme == "Operasyon":
-    col1, col2 = st.columns([2.8, 1.0])
+    col1, col2 = st.columns([6, 1.0])
 
     with col1:
         st.caption(f"Son güncelleme (SF): {now_sf_iso()}")
