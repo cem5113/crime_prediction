@@ -300,10 +300,12 @@ def build_map_fast(
 
     if df_agg is None or df_agg.empty:
         return m
+    df_agg = df_agg.copy()
+    df_agg[KEY_COL] = df_agg[KEY_COL].astype(str)
 
     # --- Hücre stilleri & popup verisini hazırlamak için kolay erişim sözlükleri
-    color_map = {r[KEY_COL]: color_for_tier(str(r.get("tier", ""))) for _, r in df_agg.iterrows()}
-    data_map = df_agg.set_index(KEY_COL).to_dict(orient="index")
+    color_map = {str(r[KEY_COL]): color_for_tier(str(r.get("tier", ""))) for _, r in df_agg.iterrows()}
+    data_map  = df_agg.set_index(df_agg[KEY_COL].astype(str)).to_dict(orient="index")
 
     # --- GeoJSON FeatureCollection'ı oluştur / properties.id alanını garanti et
     features = []
@@ -318,8 +320,7 @@ def build_map_fast(
                 props["id"] = props["GEOID"]
             else:
                 props["id"] = None
-        gid = props.get("id")
-
+        gid = str(props.get("id")) if props.get("id") is not None else None
         row = data_map.get(gid)
         if row:
             expected = float(row.get("expected", 0.0))
@@ -344,8 +345,18 @@ def build_map_fast(
 
     fc = {"type": "FeatureCollection", "features": features}
 
+    # --- Style function: sadece stil dict'i döndürür ---
     def style_fn(feat):
-        gj_kwargs = {"style_function": style_fn}
+        gid = str(feat.get("properties", {}).get("id"))
+        return {
+            "fillColor": color_map.get(gid, "#9ecae1"),
+            "color": "#666666",
+            "weight": 0.3,
+            "fillOpacity": 0.55,
+        }
+
+    # --- GeoJson: güvenli tooltip/popup + style_function kwargs ---
+    gj_kwargs = {"style_function": style_fn}
     if show_popups:
         try:
             tt = folium.features.GeoJsonTooltip(
@@ -367,32 +378,7 @@ def build_map_fast(
     try:
         folium.GeoJson(fc, **gj_kwargs).add_to(m)
     except Exception:
-        folium.GeoJson(fc, style_function=style_fn).add_to(m)
-        
-    # --- Güvenli tooltip/popup (alanlar yoksa düşmesin)
-    gj_kwargs = {"style_function": style_fn}
-    if show_popups:
-        try:
-            tt = folium.features.GeoJsonTooltip(
-                fields=["id", "tier", "expected"],
-                aliases=["GEOID", "Öncelik", "E[olay]"],
-                localize=True, sticky=False
-            )
-            gj_kwargs["tooltip"] = tt
-        except Exception:
-            pass
-        try:
-            pp = folium.features.GeoJsonPopup(
-                fields=["popup_html"], labels=False, parse_html=False, max_width=280
-            )
-            gj_kwargs["popup"] = pp
-        except Exception:
-            pass
-    
-    try:
-        folium.GeoJson(fc, **gj_kwargs).add_to(m)
-    except Exception:
-        # en azından tabaka çizilsin
+        # tooltip/popup başarısızsa en azından çiz
         folium.GeoJson(fc, style_function=style_fn).add_to(m)
 
     # ---------- POI / Transit overlay'leri ----------
