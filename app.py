@@ -37,12 +37,34 @@ from utils.constants import (
     CATEGORIES,
 )
 from components.last_update import show_last_update_badge
-try:
-    from utils.reports import load_events
-except ModuleNotFoundError:
-    import os, sys
-    sys.path.append(os.path.join(os.path.dirname(__file__), "utils"))
-    from reports import load_events
+
+# Basit CSV okuyucu (rapor modülüne ihtiyaç yok)
+def load_events(path: str) -> pd.DataFrame:
+    try:
+        df = pd.read_csv(path)
+    except Exception:
+        return pd.DataFrame()
+
+    # Zaman sütununu esnekçe bul ve UTC'ye çevir
+    lower = {str(c).strip().lower(): c for c in df.columns}
+    for cand in ["ts","timestamp","datetime","date_time","reported_at","occurred_at","time","date"]:
+        if cand in lower:
+            ts_col = lower[cand]
+            break
+    else:
+        df["ts"] = pd.NaT
+        return df.dropna(subset=["ts"])  # boş döner
+
+    df["ts"] = pd.to_datetime(df[ts_col], utc=True, errors="coerce")
+    df = df.dropna(subset=["ts"])
+
+    # lat/lon isimlerini normalize et (opsiyonel)
+    if "latitude" not in df.columns and "lat" in df.columns:
+        df = df.rename(columns={"lat": "latitude"})
+    if "longitude" not in df.columns and "lon" in df.columns:
+        df = df.rename(columns={"lon": "longitude"})
+    return df
+
     
 # ── Sayfa ayarı: Streamlit'te en üstte olmalı
 st.set_page_config(page_title="SUTAM: Suç Tahmin Modeli", layout="wide")
