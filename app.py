@@ -166,7 +166,7 @@ if "agg" not in st.session_state:
 
 # ── Operasyon
 if sekme == "Operasyon":
-    col1, col2 = st.columns([2.4, 1.0])
+    col1, col2 = st.columns([2.8, 1.0])
 
     with col1:
         st.caption(f"Son güncelleme (SF): {now_sf_iso()}")
@@ -335,12 +335,11 @@ if sekme == "Operasyon":
                     temp_hotspot_points=temp_points,    
                 )
 
-                # Güvenlik: st_folium'a gerçekten folium.Map gidiyor mu?
                 import folium
                 assert isinstance(m, folium.Map), f"st_folium beklediği tipte değil: {type(m)}"
         
                 ret = st_folium(
-                    m, key="riskmap", height=680,
+                    m, key="riskmap", height=540,
                     returned_objects=["last_object_clicked", "last_clicked"]
                 )
                 if ret:
