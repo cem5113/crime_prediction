@@ -114,10 +114,6 @@ st.sidebar.divider()
 # ---- GÜNCELLENEN KISIM ----
 st.sidebar.header("Devriye Parametreleri")
 engine = st.sidebar.radio("Harita motoru", ["Folium", "pydeck"], index=0, horizontal=True)
-# === Sidebar: Harita katmanları & filtreler (GERİ YÜKLENDİ) ===
-st.sidebar.subheader("Harita katmanları")
-show_poi      = st.sidebar.checkbox("POI overlay", value=False)
-show_transit  = st.sidebar.checkbox("Toplu taşıma overlay", value=False)
 show_popups   = st.sidebar.checkbox("Hücre popup'larını (en olası 3 suç) göster", value=True)
 
 # Grafik kapsamı (istatistikler için)
