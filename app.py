@@ -84,7 +84,52 @@ st.sidebar.divider()
 # ---- GÜNCELLENEN KISIM ----
 st.sidebar.header("Devriye Parametreleri")
 engine = st.sidebar.radio("Harita motoru", ["Folium", "pydeck"], index=0, horizontal=True)
-   
+# === Sidebar: Harita katmanları & filtreler (GERİ YÜKLENDİ) ===
+st.sidebar.subheader("Harita katmanları")
+show_poi      = st.sidebar.checkbox("POI overlay", value=False)
+show_transit  = st.sidebar.checkbox("Toplu taşıma overlay", value=False)
+show_popups   = st.sidebar.checkbox("Hücre popup'larını (en olası 3 suç) göster", value=True)
+
+# Grafik kapsamı (istatistikler için)
+scope = st.sidebar.radio("Grafik kapsamı", ["Tüm şehir", "Seçili hücre"], index=0)
+
+# Hotspot ayarları
+show_hotspot        = True   # kalıcı hotspot katmanı açık
+show_temp_hotspot   = True   # geçici hotspot katmanı açık
+hotspot_cat = st.sidebar.selectbox(
+    "Hotspot kategorisi",
+    options=["(Tüm suçlar)"] + CATEGORIES,
+    index=0,
+    help="Kalıcı/Geçici hotspot katmanları bu kategoriye göre gösterilir."
+)
+use_hot_hours = st.sidebar.checkbox("Geçici hotspot için gün içi saat filtresi", value=False)
+hot_hours_rng = st.sidebar.slider("Saat aralığı (hotspot)", 0, 24, (0, 24), disabled=not use_hot_hours)
+
+# Zaman ufku
+ufuk = st.sidebar.radio("Zaman Aralığı (şimdiden)", options=["24s", "48s", "7g"], index=0, horizontal=True)
+max_h, step = (24, 1) if ufuk == "24s" else (48, 3) if ufuk == "48s" else (7*24, 24)
+start_h, end_h = st.sidebar.slider("Saat filtresi", min_value=0, max_value=max_h, value=(0, max_h), step=step)
+
+# Kategori filtresi (tahmin motoru için)
+sel_categories = st.sidebar.multiselect("Kategori", ["(Hepsi)"] + CATEGORIES, default=[])
+if sel_categories and "(Hepsi)" in sel_categories:
+    filters = {"cats": CATEGORIES}
+else:
+    filters = {"cats": sel_categories or None}
+
+show_advanced = st.sidebar.checkbox("Gelişmiş metrikleri göster (analist)", value=False)
+
+st.sidebar.divider()
+st.sidebar.subheader("Devriye Parametreleri")
+K_planned    = st.sidebar.number_input("Planlanan devriye sayısı (K)", min_value=1, max_value=50, value=6, step=1)
+duty_minutes = st.sidebar.number_input("Devriye görev süresi (dk)",   min_value=15, max_value=600, value=120, step=15)
+cell_minutes = st.sidebar.number_input("Hücre başına ort. kontrol (dk)", min_value=2, max_value=30, value=6, step=1)
+
+# Aksiyon butonları (HATA BUNDAN GELİYORDU)
+colA, colB = st.sidebar.columns(2)
+btn_predict = colA.button("Tahmin et")
+btn_patrol  = colB.button("Devriye öner")
+
 # ---- GÜNCELLENEN KISIM ----
 
 # ── State
