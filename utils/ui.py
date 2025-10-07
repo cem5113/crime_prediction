@@ -7,6 +7,7 @@ from typing import Dict, List, Tuple
 import numpy as np
 import pandas as pd
 import folium
+from folium.plugins import HeatMap
 import streamlit as st
 
 from utils.constants import KEY_COL, CRIME_TYPES
@@ -277,10 +278,12 @@ def build_map_fast(
     *,
     show_poi: bool = False,
     show_transit: bool = False,
+    # 🔻 yeni parametreler:
+    show_hotspot: bool = False,                
+    show_temp_hotspot: bool = False,          
+    temp_hotspot_points: pd.DataFrame | None = None,  # [latitude, longitude, weight]
+    selected_type: str | None = None          
 ) -> folium.Map:
-    m = folium.Map(location=[37.7749, -122.4194], zoom_start=12, tiles="cartodbpositron")
-    if df_agg is None or df_agg.empty:
-        return m
 
     # --- hücre stilleri & popup
     color_map = {r[KEY_COL]: color_for_tier(r["tier"]) for _, r in df_agg.iterrows()}
@@ -352,6 +355,49 @@ def build_map_fast(
                             radius=2, color="#3b82f6", fill=True, fill_color="#3b82f6", fill_opacity=0.6, opacity=0.7
                         ).add_to(fg_poi)
                     fg_poi.add_to(m)
+        except Exception:
+            pass
+
+    # === Kalıcı hotspot katmanı (kategoriye duyarlı) ===
+    if show_hotspot:
+        try:
+            # metric: seçili kategori varsa o λ sütunu; yoksa expected
+            metric_col = None
+            if selected_type and selected_type in CRIME_TYPES and selected_type in df_agg.columns:
+                metric_col = selected_type
+            elif "expected" in df_agg.columns:
+                metric_col = "expected"
+
+            if metric_col:
+                thr = float(np.quantile(df_agg[metric_col].to_numpy(), 0.90))
+                strong = df_agg[df_agg[metric_col] >= thr].merge(
+                    geo_df[[KEY_COL, "centroid_lat", "centroid_lon"]],
+                    on=KEY_COL, how="left"
+                )
+                if not strong.empty:
+                    layer_name = ("Kalıcı Hotspot" if not selected_type or selected_type in (None, "all")
+                                  else f"Kalıcı Hotspot · {selected_type}")
+                    fg_perm = folium.FeatureGroup(name=layer_name, show=True)
+                    for _, r in strong.iterrows():
+                        folium.CircleMarker(
+                            [float(r["centroid_lat"]), float(r["centroid_lon"])],
+                            radius=4, color="#8b0000",
+                            fill=True, fill_color="#8b0000", fill_opacity=0.5, opacity=0.8
+                        ).add_to(fg_perm)
+                    fg_perm.add_to(m)
+        except Exception:
+            pass
+
+    # === Geçici hotspot katmanı (son T saat ısı haritası) ===
+    if show_temp_hotspot and temp_hotspot_points is not None and not temp_hotspot_points.empty:
+        try:
+            cols = {c.lower(): c for c in temp_hotspot_points.columns}
+            lat = cols.get("latitude") or cols.get("lat")
+            lon = cols.get("longitude") or cols.get("lon")
+            w   = cols.get("weight")
+            if lat and lon:
+                pts = temp_hotspot_points[[lat, lon] + ([w] if w else [])].values.tolist()
+                HeatMap(pts, name="Geçici Hotspot", radius=16, blur=24, max_zoom=16).add_to(m)
         except Exception:
             pass
 
