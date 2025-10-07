@@ -481,19 +481,5 @@ if "events" not in st.session_state:
         "geoid": ["12345"]*50
     })
 
-# ── Raporlar
-else:
-    # Kısa dönem: mevcut ufuk için λ tablosu
-    agg_current = st.session_state.get("agg")
-    # Uzun dönem referans λ (opsiyonel): varsa state'te tut (yoksa None)
-    agg_long = st.session_state.get("agg_long")
 
-    events_src = st.session_state.get("events")
-    if not isinstance(events_src, pd.DataFrame) or events_src.empty:
-        events_src = st.session_state.get("events_df")
-    render_reports(
-    events_df     = events_src,
-    agg_current   = agg_current,
-    agg_long_term = agg_long,
-)
 
