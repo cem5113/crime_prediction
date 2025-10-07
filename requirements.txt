@@ -1,7 +1,16 @@
+# Core
 streamlit==1.36.0
-altair>=5.2,<6
 pandas==2.2.2
 numpy==1.26.4
+
+# Viz
+altair>=5.2,<6
+
+# Maps
 folium==0.16.0
 streamlit-folium==0.21.1
 pydeck>=0.8
+
+# ML (BallTree için şart)
+scikit-learn>=1.5,<1.6
+scipy>=1.11,<1.13
