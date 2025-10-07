@@ -479,11 +479,11 @@ else:
     # Uzun dönem referans λ (opsiyonel): varsa state'te tut (yoksa None)
     agg_long = st.session_state.get("agg_long")
 
-events_src = st.session_state.get("events") or st.session_state.get("events_df")
-
-render_reports(
-    events_df     = events_src,
-    agg_current   = agg_current,
-    agg_long_term = agg_long,
-)
+    events_src = st.session_state.get("events") or st.session_state.get("events_df")
+    
+    render_reports(
+        events_df     = events_src,
+        agg_current   = agg_current,
+        agg_long_term = agg_long,
+    )
 
