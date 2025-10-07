@@ -18,6 +18,7 @@ from utils.forecast import precompute_base_intensity, aggregate_fast, prob_ge_k
 from utils.patrol import allocate_patrols
 from utils.ui import SMALL_UI_CSS, render_result_card, build_map_fast, render_kpi_row
 from utils.hotspots import temp_hotspot_scores
+from components.report_view import render_reports
 
 # Isı matrisi: ayrı modül varsa oradan, yoksa ui'dan
 try:
@@ -38,82 +39,23 @@ from utils.constants import (
 )
 from components.last_update import show_last_update_badge
 
-# Basit CSV okuyucu (rapor modülüne ihtiyaç yok)
-def load_events(path: str) -> pd.DataFrame:
-    try:
-        df = pd.read_csv(path)
-    except Exception:
-        return pd.DataFrame()
+try:
+    from utils.reports import load_events
+except ModuleNotFoundError:
+    import sys, os
+    sys.path.append(os.path.join(os.path.dirname(__file__), "utils"))
+    from reports import load_events  # utils/reports.py
 
-    # Zaman sütununu esnekçe bul ve UTC'ye çevir
-    lower = {str(c).strip().lower(): c for c in df.columns}
-    for cand in ["ts","timestamp","datetime","date_time","reported_at","occurred_at","time","date"]:
-        if cand in lower:
-            ts_col = lower[cand]
-            break
-    else:
-        df["ts"] = pd.NaT
-        return df.dropna(subset=["ts"])  # boş döner
-
-    df["ts"] = pd.to_datetime(df[ts_col], utc=True, errors="coerce")
-    df = df.dropna(subset=["ts"])
-
-    # lat/lon isimlerini normalize et (opsiyonel)
-    if "latitude" not in df.columns and "lat" in df.columns:
-        df = df.rename(columns={"lat": "latitude"})
-    if "longitude" not in df.columns and "lon" in df.columns:
-        df = df.rename(columns={"lon": "longitude"})
-    return df
-
-    
 # ── Sayfa ayarı: Streamlit'te en üstte olmalı
 st.set_page_config(page_title="SUTAM: Suç Tahmin Modeli", layout="wide")
 st.markdown(SMALL_UI_CSS, unsafe_allow_html=True)
-
-# Yazıları (tablolar hariç) biraz büyüt
-st.markdown("""
-<style>
-/* === Genel metin (tablo/datarame hariç) === */
-[data-testid="stAppViewContainer"] p,
-[data-testid="stAppViewContainer"] li,
-[data-testid="stAppViewContainer"] label,
-[data-testid="stAppViewContainer"] span {
-  font-size: 1.08rem;              /* arttırmak için 1.12rem, 1.15rem yapabilirsin */
-}
-
-/* Başlıklar */
-h1 { font-size: 2.0rem; }
-h2 { font-size: 1.60rem; }
-h3 { font-size: 1.25rem; }
-
-/* Sidebar metinleri */
-section[data-testid="stSidebar"] * {
-  font-size: 1.02rem;
-}
-
-/* Metric bileşeni */
-[data-testid="stMetricLabel"] { font-size: 1.00rem; }
-[data-testid="stMetricValue"] { font-size: 1.35rem; }
-
-/* Buton ve radyo/checkbox etiketleri */
-button, [data-baseweb="button"] { font-size: 1.00rem; }
-div[role="radiogroup"] label p { font-size: 1.05rem; }
-
-/* === Tabloları büyütme (varsayılan boyutta kalsın) === */
-div[data-testid="stDataFrame"] *,
-table[data-testid="stTable"] *,
-.stTable * {
-  font-size: 0.875rem !important;
-}
-</style>
-""", unsafe_allow_html=True)
-
 
 # ── Başlık ve "Son güncelleme" rozetini göster
 st.title("SUTAM: Suç Tahmin Modeli")
 
 try:
     events_df = load_events("data/events.csv")
+    # Boş olsa bile state'e yaz (raporlar güvenli çalışsın)
     st.session_state["events_df"] = events_df if isinstance(events_df, pd.DataFrame) else None
     # "events" key'ini de aynı anda doldur (yoksa yarat)
     st.session_state["events"] = st.session_state["events_df"]
@@ -147,46 +89,40 @@ def now_sf_iso() -> str:
     
 # ── Sidebar
 st.sidebar.markdown("### Görünüm")
-sekme = st.sidebar.radio("", options=["Operasyon"], index=0, horizontal=True)
+sekme = st.sidebar.radio("", options=["Operasyon", "Raporlar"], index=0, horizontal=True)
 st.sidebar.divider()
 
 # ---- GÜNCELLENEN KISIM ----
 st.sidebar.header("Devriye Parametreleri")
 engine = st.sidebar.radio("Harita motoru", ["Folium", "pydeck"], index=0, horizontal=True)
+# === Sidebar: Harita katmanları & filtreler (GERİ YÜKLENDİ) ===
+st.sidebar.subheader("Harita katmanları")
+show_poi      = st.sidebar.checkbox("POI overlay", value=False)
+show_transit  = st.sidebar.checkbox("Toplu taşıma overlay", value=False)
 show_popups   = st.sidebar.checkbox("Hücre popup'larını (en olası 3 suç) göster", value=True)
 
-# Harita katmanları
-st.sidebar.subheader("Harita katmanları")
-show_risk_layer   = st.sidebar.checkbox("Tahmin katmanı (risk)", value=True)
-show_perm_hotspot = st.sidebar.checkbox("Sıcak nokta (kalıcı)", value=True)
-show_temp_hotspot = st.sidebar.checkbox("Geçici sıcak nokta (son olaylar)", value=True)
+# Grafik kapsamı (istatistikler için)
+scope = st.sidebar.radio("Grafik kapsamı", ["Tüm şehir", "Seçili hücre"], index=0)
 
+# Hotspot ayarları
+show_hotspot        = True   # kalıcı hotspot katmanı açık
+show_temp_hotspot   = True   # geçici hotspot katmanı açık
 hotspot_cat = st.sidebar.selectbox(
     "Hotspot kategorisi",
     options=["(Tüm suçlar)"] + CATEGORIES,
     index=0,
     help="Kalıcı/Geçici hotspot katmanları bu kategoriye göre gösterilir."
 )
-
 use_hot_hours = st.sidebar.checkbox("Geçici hotspot için gün içi saat filtresi", value=False)
 hot_hours_rng = st.sidebar.slider("Saat aralığı (hotspot)", 0, 24, (0, 24), disabled=not use_hot_hours)
 
 # Zaman ufku
-now_local = (datetime.utcnow() + timedelta(hours=SF_TZ_OFFSET)).replace(minute=0, second=0, microsecond=0)
-ufuk = st.sidebar.radio(
-    f"Zaman aralığı (başlangıç: {now_local:%Y-%m-%d %H:%M})",
-    options=["24s", "48s", "7g"], index=0, horizontal=True
-)
+ufuk = st.sidebar.radio("Zaman Aralığı (şimdiden)", options=["24s", "48s", "7g"], index=0, horizontal=True)
 max_h, step = (24, 1) if ufuk == "24s" else (48, 3) if ufuk == "48s" else (7*24, 24)
 start_h, end_h = st.sidebar.slider("Saat filtresi", min_value=0, max_value=max_h, value=(0, max_h), step=step)
-start_dt_label = now_local + timedelta(hours=start_h)
-end_dt_label   = now_local + timedelta(hours=end_h)
-st.sidebar.caption(
-    f"Seçilen aralık: {start_dt_label:%Y-%m-%d %H:%M} → {end_dt_label:%Y-%m-%d %H:%M}  ( {end_h - start_h} saat )"
-)
 
 # Kategori filtresi (tahmin motoru için)
-sel_categories = st.sidebar.multiselect("Suç Tahmini için Kategori", ["(Hepsi)"] + CATEGORIES, default=[])
+sel_categories = st.sidebar.multiselect("Kategori", ["(Hepsi)"] + CATEGORIES, default=[])
 if sel_categories and "(Hepsi)" in sel_categories:
     filters = {"cats": CATEGORIES}
 else:
@@ -264,11 +200,7 @@ if sekme == "Operasyon":
                 st.session_state["agg_long"] = None
 
         agg = st.session_state["agg"]
-        if isinstance(agg, pd.DataFrame):
-            df_agg_for_map = agg if show_risk_layer else agg.iloc[0:0]
-        else:
-            df_agg_for_map = None
-            
+
         events_all = st.session_state.get("events")
         lookback_h = int(np.clip(2 * st.session_state.get("horizon_h", 24), 24, 72))
         
@@ -301,6 +233,12 @@ if sekme == "Operasyon":
             df_plot = ev_recent_df.copy()
         else:
             df_plot = pd.DataFrame(columns=["ts", "latitude", "longitude"])
+        
+        # "Seçili hücre" seçilmişse, olayları o hücreye indir (KEY_COL varsa)
+        if scope == "Seçili hücre" and st.session_state.get("explain", {}).get("geoid"):
+            gid = str(st.session_state["explain"]["geoid"])
+            if KEY_COL in df_plot.columns:
+                df_plot = df_plot[df_plot[KEY_COL].astype(str) == gid]
                 
         # --- Geçici hotspot HeatMap girdisi ---
         if isinstance(ev_recent_df, pd.DataFrame) and not ev_recent_df.empty:
@@ -308,20 +246,23 @@ if sekme == "Operasyon":
             temp_points["weight"] = ev_recent_df["weight"] if "weight" in ev_recent_df.columns else 1.0
         else:
             temp_points = pd.DataFrame(columns=["latitude", "longitude", "weight"])
-        
-        # Katman kapalıysa boş gönder
-        temp_points_effective = temp_points if show_temp_hotspot else pd.DataFrame(columns=["latitude","longitude","weight"])
-        
-        # >>> BURAYA EKLE <<<
-        # Katman kapalıysa boş gönder; açık ise mevcut noktaları kullan
-        temp_points_effective = (
-            temp_points.copy() if show_temp_hotspot
-            else pd.DataFrame(columns=["latitude","longitude","weight"])
-        )
+                
+        # ev_recent boşsa: üst risk hücrelerinden sentetik ısı üret (fallback)
+        if show_temp_hotspot and temp_points.empty and isinstance(agg, pd.DataFrame) and not agg.empty:
+            topn = 80
+            tmp = (
+                agg.nlargest(topn, "expected")
+                   .merge(GEO_DF[[KEY_COL, "centroid_lat", "centroid_lon"]], on=KEY_COL, how="left")
+                   .dropna(subset=["centroid_lat", "centroid_lon"])
+            )
+            temp_points = tmp.rename(columns={"centroid_lat": "latitude", "centroid_lon": "longitude"})[
+                ["latitude", "longitude"]
+            ]
+            temp_points["weight"] = tmp["expected"].clip(lower=0).astype(float)
         
         # küçük sayaç (gösterge)
-        st.sidebar.caption(f"Geçici hotspot noktası: {len(temp_points_effective)}")
-
+        st.sidebar.caption(f"Geçici hotspot noktası: {len(temp_points)}")
+        
         if agg is not None:
             if engine == "Folium":
 
@@ -366,56 +307,27 @@ if sekme == "Operasyon":
                     ev_recent = pd.DataFrame(columns=["latitude","longitude","weight"])
                 
                 m = build_map_fast(
-                    df_agg=df_agg_for_map,
+                    df_agg=agg,
                     geo_features=GEO_FEATURES,
                     geo_df=GEO_DF,
                     show_popups=show_popups,
                     patrol=st.session_state.get("patrol"),
-                    # Katman parametreleri
-                    show_hotspot=show_perm_hotspot,
-                    perm_hotspot_mode="heat",              # "markers" istersen değiştir
+                    show_poi=show_poi,
+                    show_transit=show_transit,
+                
+                    show_hotspot=show_hotspot,         
+                    perm_hotspot_mode="heat",
+                
                     show_temp_hotspot=show_temp_hotspot,
-                    temp_hotspot_points=temp_points_effective,
-                    # LayerControl adları ve varsayılan görünürlükler
-                    add_layer_control=True,
-                    risk_layer_show=show_risk_layer,
-                    perm_hotspot_show=show_perm_hotspot,
-                    temp_hotspot_show=show_temp_hotspot,
-                    risk_layer_name="Tahmin katmanı (risk)",
-                    perm_hotspot_layer_name="Sıcak nokta (kalıcı)",
-                    temp_hotspot_layer_name="Geçici sıcak nokta (son olaylar)",
+                    temp_hotspot_points=temp_points,    
                 )
 
-                # ev_recent boşsa: üst risk hücrelerinden sentetik ısı üret (fallback)
-                if show_temp_hotspot and temp_points_effective.empty and isinstance(df_agg_for_map, pd.DataFrame) and not df_agg_for_map.empty:
-                    topn = 80
-                    tmp = (
-                        df_agg_for_map.nlargest(topn, "expected")
-                            .merge(GEO_DF[[KEY_COL, "centroid_lat", "centroid_lon"]], on=KEY_COL, how="left")
-                            .dropna(subset=["centroid_lat", "centroid_lon"])
-                    )
-                    temp_points_effective = tmp.rename(
-                        columns={"centroid_lat":"latitude", "centroid_lon":"longitude"}
-                    )[["latitude","longitude"]].assign(weight=tmp["expected"].clip(lower=0).astype(float))
-
-                if show_temp_hotspot and temp_points_effective.empty and isinstance(df_agg_for_map, pd.DataFrame) and not df_agg_for_map.empty:
-                    topn = 80
-                    tmp = (
-                        df_agg_for_map.nlargest(topn, "expected")
-                            .merge(GEO_DF[[KEY_COL, "centroid_lat", "centroid_lon"]], on=KEY_COL, how="left")
-                            .dropna(subset=["centroid_lat", "centroid_lon"])
-                    )
-                    temp_points_effective = tmp.rename(
-                        columns={"centroid_lat":"latitude", "centroid_lon":"longitude"}
-                    )[["latitude","longitude"]].assign(weight=tmp["expected"].clip(lower=0).astype(float))
-                
+                # Güvenlik: st_folium'a gerçekten folium.Map gidiyor mu?
                 import folium
                 assert isinstance(m, folium.Map), f"st_folium beklediği tipte değil: {type(m)}"
         
                 ret = st_folium(
-                    m, key="riskmap",
-                    width=1100,        # ← EN (px)
-                    height=540,        # ← BOY (px) istersen sabit bırak
+                    m, key="riskmap", height=540,
                     returned_objects=["last_object_clicked", "last_clicked"]
                 )
                 if ret:
@@ -429,14 +341,13 @@ if sekme == "Operasyon":
                     ret = None
                 else:
                     deck = build_map_fast_deck(
-                        df_agg_for_map if isinstance(df_agg_for_map, pd.DataFrame) else agg,  # elde ne varsa
-                        GEO_DF,
-                        show_poi=False,
-                        show_transit=False,
+                        agg, GEO_DF,
+                        show_poi=show_poi,
+                        show_transit=show_transit,
                         patrol=st.session_state.get("patrol"),
-                        show_hotspot=show_perm_hotspot,
+                        show_hotspot=show_hotspot,
                         show_temp_hotspot=show_temp_hotspot,
-                        temp_hotspot_points=temp_points_effective,
+                        temp_hotspot_points=temp_points,
                     )
                     st.pydeck_chart(deck)
                     # Not: pydeck tarafında tıklama yakalama ayrı yapılır.
@@ -454,7 +365,7 @@ if sekme == "Operasyon":
         else:
             st.info("Önce ‘Tahmin et’ ile bir tahmin üretin.")
     with col2:
-        st.header("Risk Özeti")
+        st.subheader("Risk Özeti", anchor=False)
 
         if st.session_state["agg"] is not None:
             a = st.session_state["agg"]
@@ -464,7 +375,7 @@ if sekme == "Operasyon":
             low  = int((a["tier"] == "Hafif").sum())
 
             render_kpi_row([
-                ("Beklenen Suç Sayısı", kpi_expected, "Seçili zaman ufkunda toplam beklenen olay sayısı"),
+                ("Beklenen olay (ufuk)", kpi_expected, "Seçili zaman ufkunda toplam beklenen olay sayısı"),
                 ("Yüksek",               high,         "Yüksek öncelikli hücre sayısı"),
                 ("Orta",                 mid,          "Orta öncelikli hücre sayısı"),
                 ("Düşük",                low,          "Düşük öncelikli hücre sayısı"),
@@ -472,7 +383,7 @@ if sekme == "Operasyon":
         else:
             st.info("Önce ‘Tahmin et’ ile bir tahmin üretin.")
 
-        st.header("En riskli bölgeler")
+        st.subheader("En riskli bölgeler")
         if st.session_state["agg"] is not None:
 
             def top_risky_table(df_agg: pd.DataFrame, n: int = 12, show_ci: bool = False) -> pd.DataFrame:
@@ -570,5 +481,18 @@ if "events" not in st.session_state:
         "geoid": ["12345"]*50
     })
 
+# ── Raporlar
+else:
+    # Kısa dönem: mevcut ufuk için λ tablosu
+    agg_current = st.session_state.get("agg")
+    # Uzun dönem referans λ (opsiyonel): varsa state'te tut (yoksa None)
+    agg_long = st.session_state.get("agg_long")
 
-
+    events_src = st.session_state.get("events")
+    if not isinstance(events_src, pd.DataFrame) or events_src.empty:
+        events_src = st.session_state.get("events_df")
+    render_reports(
+    events_df     = events_src,
+    agg_current   = agg_current,
+    agg_long_term = agg_long,
+)
