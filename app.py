@@ -13,16 +13,18 @@ from utils.forecast import precompute_base_intensity, aggregate_fast, prob_ge_k
 from utils.patrol import allocate_patrols
 from utils.ui import SMALL_UI_CSS, render_result_card, build_map_fast, render_kpi_row
 
+# Isı matrisi: ayrı modül varsa oradan, yoksa ui'dan
 try:
     from utils.heatmap import render_day_hour_heatmap
-except Exception:
-    # ui.py içindeyse şu alternatife izin ver
-    from utils.ui import render_day_hour_heatmap 
+except ImportError:
+    from utils.ui import render_day_hour_heatmap
+
+# Pydeck yardımcıları: ayrı modülde olmalı; yoksa None
 try:
     from utils.deck import build_map_fast_deck
-except Exception:
-    # ui.py içindeyse şu alternatife izin ver
-    from utils.ui import build_map_fast_deck     
+except ImportError:
+    build_map_fast_deck = None
+  
 from utils.constants import (
     SF_TZ_OFFSET, KEY_COL,
     MODEL_VERSION, MODEL_LAST_TRAIN,
@@ -177,15 +179,19 @@ if sekme == "Operasyon":
                         st.session_state["explain"] = {"geoid": gid}
         
             else:
-                deck = build_map_fast_deck(
-                    agg, GEO_DF,
-                    show_poi=show_poi,
-                    show_transit=show_transit,
-                    patrol=st.session_state.get("patrol"),
-                )
-                st.pydeck_chart(deck)
-                # Not: pydeck tarafında tıklama yakalama ayrı yapılır.
-                ret = None
+                if build_map_fast_deck is None:
+                    st.error("Pydeck harita modülü bulunamadı (utils/deck.py yüklenemedi). Lütfen Folium motorunu seçin.")
+                    ret = None
+                else:
+                    deck = build_map_fast_deck(
+                        agg, GEO_DF,
+                        show_poi=show_poi,
+                        show_transit=show_transit,
+                        patrol=st.session_state.get("patrol"),
+                    )
+                    st.pydeck_chart(deck)
+                    # Not: pydeck tarafında tıklama yakalama ayrı yapılır.
+                    ret = None
         
             # Açıklama kartı
             start_iso  = st.session_state["start_iso"]
