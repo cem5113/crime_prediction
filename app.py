@@ -356,7 +356,7 @@ if sekme == "Operasyon":
         else:
             st.info("Önce ‘Tahmin et’ ile bir tahmin üretin.")
     with col2:
-        st.header("Risk Özeti")
+        st.subheader("Risk Özeti", anchor=False)
 
         if st.session_state["agg"] is not None:
             a = st.session_state["agg"]
@@ -374,7 +374,7 @@ if sekme == "Operasyon":
         else:
             st.info("Önce ‘Tahmin et’ ile bir tahmin üretin.")
 
-        st.header("En riskli bölgeler")
+        st.subheader("En riskli bölgeler")
         if st.session_state["agg"] is not None:
 
             def top_risky_table(df_agg: pd.DataFrame, n: int = 12, show_ci: bool = False) -> pd.DataFrame:
