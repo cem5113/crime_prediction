@@ -116,9 +116,6 @@ st.sidebar.header("Devriye Parametreleri")
 engine = st.sidebar.radio("Harita motoru", ["Folium", "pydeck"], index=0, horizontal=True)
 show_popups   = st.sidebar.checkbox("Hücre popup'larını (en olası 3 suç) göster", value=True)
 
-# Grafik kapsamı (istatistikler için)
-scope = st.sidebar.radio("Grafik kapsamı", ["Tüm şehir", "Seçili hücre"], index=0)
-
 # Hotspot ayarları
 show_hotspot        = True   # kalıcı hotspot katmanı açık
 show_temp_hotspot   = True   # geçici hotspot katmanı açık
@@ -248,12 +245,6 @@ if sekme == "Operasyon":
             df_plot = ev_recent_df.copy()
         else:
             df_plot = pd.DataFrame(columns=["ts", "latitude", "longitude"])
-        
-        # "Seçili hücre" seçilmişse, olayları o hücreye indir (KEY_COL varsa)
-        if scope == "Seçili hücre" and st.session_state.get("explain", {}).get("geoid"):
-            gid = str(st.session_state["explain"]["geoid"])
-            if KEY_COL in df_plot.columns:
-                df_plot = df_plot[df_plot[KEY_COL].astype(str) == gid]
                 
         # --- Geçici hotspot HeatMap girdisi ---
         if isinstance(ev_recent_df, pd.DataFrame) and not ev_recent_df.empty:
