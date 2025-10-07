@@ -284,18 +284,25 @@ def build_map_fast(
     *,
     show_poi: bool = False,
     show_transit: bool = False,
-    # 🔻 hotspot parametreleri
-    show_hotspot: bool = False,                         # kalıcı hotspot
-    show_temp_hotspot: bool = False,                    # geçici hotspot
-    temp_hotspot_points: pd.DataFrame | None = None,    # [latitude, longitude, weight]
-    selected_type: str | None = None,                   # None/"all" => expected; aksi halde seçili kategori
-    # 🔻 mod/analiz parametreleri (YENİ)
-    perm_hotspot_mode: str = "markers",                 # "markers" | "heat"
-    show_anomaly: bool = False,                         # geçici–kalıcı farkını vurgula
-    base_metric_for_anom: str | None = None,            # None => "expected"
-    temp_scores_col: str = "hotspot_score",             # df_agg’te geçici skor sütunu adı
-    anom_thr: float = 0.25                              # anomali eşiği (0–1 arası)
-) -> folium.Map:
+    # mevcut parametreler
+    show_hotspot: bool = False,                      # (artık varsayılan görünürlük için kullanmıyoruz)
+    show_temp_hotspot: bool = False,                 # (↑)
+    temp_hotspot_points: pd.DataFrame | None = None, # [latitude, longitude, weight]
+    selected_type: str | None = None,
+    perm_hotspot_mode: str = "markers",              # "markers" | "heat"
+    show_anomaly: bool = False,
+    base_metric_for_anom: str | None = None,
+    temp_scores_col: str = "hotspot_score",
+    anom_thr: float = 0.25,
+    # ↓ yeni parametreler (harita üzerindeki katman menüsü için)
+    add_layer_control: bool = True,
+    risk_layer_show: bool = True,
+    perm_hotspot_show: bool = True,
+    temp_hotspot_show: bool = True,
+    risk_layer_name: str = "Tahmin katmanı (risk)",
+    perm_hotspot_layer_name: str = "Sıcak nokta (kalıcı)",
+    temp_hotspot_layer_name: str = "Geçici sıcak nokta (son olaylar)",
+) -> "folium.Map":
     m = folium.Map(location=[37.7749, -122.4194], zoom_start=12, tiles="cartodbpositron")
 
     if df_agg is None or df_agg.empty:
