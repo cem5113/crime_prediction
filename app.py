@@ -264,7 +264,6 @@ if sekme == "Operasyon":
                 st.session_state["agg_long"] = None
 
         agg = st.session_state["agg"]
-        
         if isinstance(agg, pd.DataFrame):
             df_agg_for_map = agg if show_risk_layer else agg.iloc[0:0]
         else:
@@ -312,24 +311,17 @@ if sekme == "Operasyon":
         
         # Katman kapalıysa boş gönder
         temp_points_effective = temp_points if show_temp_hotspot else pd.DataFrame(columns=["latitude","longitude","weight"])
-                
-        # ev_recent boşsa: üst risk hücrelerinden sentetik ısı üret (fallback)
-        if show_temp_hotspot and temp_points_effective.empty and isinstance(df_agg_for_map, pd.DataFrame) and not df_agg_for_map.empty:
-            topn = 80
-            tmp = (
-                df_agg_for_map.nlargest(topn, "expected")
-                    .merge(GEO_DF[[KEY_COL, "centroid_lat", "centroid_lon"]], on=KEY_COL, how="left")
-                    .dropna(subset=["centroid_lat", "centroid_lon"])
-            )
-            temp_points_effective = tmp.rename(columns={"centroid_lat": "latitude", "centroid_lon": "longitude"})[
-                ["latitude", "longitude"]
-            ]
-            temp_points_effective["weight"] = tmp["expected"].clip(lower=0).astype(float)
+        
+        # >>> BURAYA EKLE <<<
+        # Katman kapalıysa boş gönder; açık ise mevcut noktaları kullan
+        temp_points_effective = (
+            temp_points.copy() if show_temp_hotspot
+            else pd.DataFrame(columns=["latitude","longitude","weight"])
+        )
         
         # küçük sayaç (gösterge)
-        st.sidebar.caption(f"Geçici hotspot noktası: {len(temp_points)}")
+        st.sidebar.caption(f"Geçici hotspot noktası: {len(temp_points_effective)}")
 
-        df_agg_for_map = agg if show_risk_layer else agg.iloc[0:0]
         if agg is not None:
             if engine == "Folium":
 
@@ -374,14 +366,17 @@ if sekme == "Operasyon":
                     ev_recent = pd.DataFrame(columns=["latitude","longitude","weight"])
                 
                 m = build_map_fast(
-                    # risk katmanı her zaman gönderilsin ki harita üstünde gizleyip/açabilelim
-                    df_agg=agg,
+                    df_agg=df_agg_for_map,
                     geo_features=GEO_FEATURES,
                     geo_df=GEO_DF,
                     show_popups=show_popups,
                     patrol=st.session_state.get("patrol"),
-                
-                    # ↓ yeni parametreler: harita ÜZERİNDEki menüde varsayılan görünürlük
+                    # Katman parametreleri
+                    show_hotspot=show_perm_hotspot,
+                    perm_hotspot_mode="heat",              # "markers" istersen değiştir
+                    show_temp_hotspot=show_temp_hotspot,
+                    temp_hotspot_points=temp_points_effective,
+                    # LayerControl adları ve varsayılan görünürlükler
                     add_layer_control=True,
                     risk_layer_show=show_risk_layer,
                     perm_hotspot_show=show_perm_hotspot,
@@ -389,11 +384,31 @@ if sekme == "Operasyon":
                     risk_layer_name="Tahmin katmanı (risk)",
                     perm_hotspot_layer_name="Sıcak nokta (kalıcı)",
                     temp_hotspot_layer_name="Geçici sıcak nokta (son olaylar)",
-                
-                    # geçici hotspot noktaları
-                    temp_hotspot_points=temp_points_effective,
                 )
 
+                # ev_recent boşsa: üst risk hücrelerinden sentetik ısı üret (fallback)
+                if show_temp_hotspot and temp_points_effective.empty and isinstance(df_agg_for_map, pd.DataFrame) and not df_agg_for_map.empty:
+                    topn = 80
+                    tmp = (
+                        df_agg_for_map.nlargest(topn, "expected")
+                            .merge(GEO_DF[[KEY_COL, "centroid_lat", "centroid_lon"]], on=KEY_COL, how="left")
+                            .dropna(subset=["centroid_lat", "centroid_lon"])
+                    )
+                    temp_points_effective = tmp.rename(
+                        columns={"centroid_lat":"latitude", "centroid_lon":"longitude"}
+                    )[["latitude","longitude"]].assign(weight=tmp["expected"].clip(lower=0).astype(float))
+
+                if show_temp_hotspot and temp_points_effective.empty and isinstance(df_agg_for_map, pd.DataFrame) and not df_agg_for_map.empty:
+                    topn = 80
+                    tmp = (
+                        df_agg_for_map.nlargest(topn, "expected")
+                            .merge(GEO_DF[[KEY_COL, "centroid_lat", "centroid_lon"]], on=KEY_COL, how="left")
+                            .dropna(subset=["centroid_lat", "centroid_lon"])
+                    )
+                    temp_points_effective = tmp.rename(
+                        columns={"centroid_lat":"latitude", "centroid_lon":"longitude"}
+                    )[["latitude","longitude"]].assign(weight=tmp["expected"].clip(lower=0).astype(float))
+                
                 import folium
                 assert isinstance(m, folium.Map), f"st_folium beklediği tipte değil: {type(m)}"
         
