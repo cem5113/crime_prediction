@@ -1,105 +1,44 @@
 # utils/reports.py
 from __future__ import annotations
-import numpy as np
 import pandas as pd
-
-# ---- Dahili yardımcılar ----
+import numpy as np
 
 _TS_CANDIDATES = [
-    "ts", "timestamp", "datetime", "date_time", "reported_at", "occurred_at",
-    "time", "event_time"
+    "ts","timestamp","datetime","date_time","reported_at","occurred_at","time","date"
 ]
 
-_LAT_SYNONYMS = ["lat", "latitude", "y", "Lat", "Latitude"]
-_LON_SYNONYMS = ["lon", "long", "longitude", "x", "Lon", "Long", "Longitude"]
+def _parse_ts_series(s: pd.Series) -> pd.Series:
+    if pd.api.types.is_numeric_dtype(s):
+        med = pd.to_numeric(s, errors="coerce").dropna().astype(float).median()
+        unit = "ms" if (pd.notna(med) and med > 1e12) else "s"
+        return pd.to_datetime(s, unit=unit, utc=True, errors="coerce")
+    return pd.to_datetime(s.astype(str).str.strip(), utc=True, errors="coerce")
 
-def _pick_first_existing(lower_map: dict[str, str], names: list[str]) -> str | None:
-    for n in names:
-        if n in lower_map:
-            return lower_map[n]
-    return None
-
-def _normalize_latlon(df: pd.DataFrame) -> pd.DataFrame:
-    """Lat/Lon eşanlamlılarını 'latitude'/'longitude' olarak normalize eder."""
-    if df is None or df.empty:
-        return pd.DataFrame()
-
-    out = df.copy()
-    lower = {c.lower(): c for c in out.columns}
-
-    lat_col = _pick_first_existing(lower, [s.lower() for s in _LAT_SYNONYMS])
-    lon_col = _pick_first_existing(lower, [s.lower() for s in _LON_SYNONYMS])
-
-    if lat_col and "latitude" not in out.columns:
-        out.rename(columns={lower[lat_col]: "latitude"}, inplace=True)
-    if lon_col and "longitude" not in out.columns:
-        out.rename(columns={lower[lon_col]: "longitude"}, inplace=True)
-
-    # Tipleri güvene al
-    if "latitude" in out.columns:
-        out["latitude"] = pd.to_numeric(out["latitude"], errors="coerce")
-    if "longitude" in out.columns:
-        out["longitude"] = pd.to_numeric(out["longitude"], errors="coerce")
-
-    return out
-
-def _infer_ts_series(df: pd.DataFrame) -> pd.Series | None:
+def normalize_events_ts(df: pd.DataFrame | None, key_col: str = "geoid") -> pd.DataFrame:
     """
-    Zaman bilgisini şu öncelikle türetir:
-    1) Bilinen aday kolonlardan biri
-    2) Ayrı 'date' + 'time'
-    3) Yoksa None (rapor tarafı uyarı verir)
-    """
-    lower = {c.lower(): c for c in df.columns}
-
-    # 1) Aday kolonlardan biri
-    found = _pick_first_existing(lower, [s.lower() for s in _TS_CANDIDATES])
-    if found:
-        s = df[lower[found]]
-        if np.issubdtype(s.dtype, np.number):
-            med = pd.Series(s).dropna().astype(float).median()
-            unit = "ms" if med and med > 1e12 else "s"
-            ts = pd.to_datetime(s, unit=unit, utc=True, errors="coerce")
-        else:
-            ts = pd.to_datetime(s.astype(str).str.strip(), utc=True, errors="coerce")
-        return ts
-
-    # 2) date + time birleşik
-    if "date" in lower and "time" in lower:
-        tmp = df[[lower["date"], lower["time"]]].astype(str).agg(" ".join, axis=1)
-        ts = pd.to_datetime(tmp, utc=True, errors="coerce")
-        return ts
-
-    # 3) YOK
-    return None
-
-def _validate_min_schema(df: pd.DataFrame, key_col: str) -> bool:
-    """En azından geoid ya da (latitude, longitude) var mı?"""
-    has_key = key_col in df.columns
-    has_ll  = {"latitude", "longitude"} <= set(df.columns)
-    return bool(has_key or has_ll)
-
-# ---- Dışa açık yardımcılar ----
-
-def normalize_events_ts(df: pd.DataFrame, key_col: str = "geoid") -> pd.DataFrame:
-    """
-    Verilen DataFrame'de zaman bilgisini 'ts' kolonu olarak türetir ve UTC'ye çevirir.
-    Ek olarak 'hour', 'dow', 'date' kolonlarını ekler ve lat/lon isimlerini normalize eder.
+    Olay verisinde esnek zaman sütunu normalizasyonu.
+    Çıktı: ts(utc), hour, dow, date (+ varsa key_col)
+    Boş veya parse edilemeyen durumda boş DataFrame döner.
     """
     if df is None or not isinstance(df, pd.DataFrame) or df.empty:
         return pd.DataFrame()
 
-    out = _normalize_latlon(df)
+    lc = {c.lower(): c for c in df.columns}
+    ts = None
+    # 1) doğrudan adaylar
+    for name in _TS_CANDIDATES:
+        if name in lc:
+            ts = _parse_ts_series(df[lc[name]])
+            break
+    # 2) date + time birleşimi
+    if ts is None and ("date" in lc and "time" in lc):
+        tmp = df[[lc["date"], lc["time"]]].astype(str).agg(" ".join, axis=1)
+        ts = pd.to_datetime(tmp, utc=True, errors="coerce")
 
-    ts = _infer_ts_series(out)
     if ts is None:
-        # Belki zaten 'ts' vardır ama parsable değildir; tekrar dene
-        if "ts" in out.columns:
-            ts = pd.to_datetime(out["ts"], utc=True, errors="coerce")
-        else:
-            return pd.DataFrame()
+        return pd.DataFrame()
 
-    out = out.copy()
+    out = df.copy()
     out["ts"] = ts
     out = out.dropna(subset=["ts"])
     if out.empty:
@@ -109,23 +48,19 @@ def normalize_events_ts(df: pd.DataFrame, key_col: str = "geoid") -> pd.DataFram
     out["dow"]  = out["ts"].dt.dayofweek
     out["date"] = out["ts"].dt.date
 
-    # Minimum şema kontrol (raporlar yine çalışır; sadece bazı UI parçaları kısıtlı olur)
-    # Burada fail etmiyoruz; sadece bilgiyi not düşmek isterseniz log basabilirsiniz.
-    _ = _validate_min_schema(out, key_col)
+    # key_col adı farklı büyük/küçük olabilir → varsa bırak
+    if key_col not in out.columns and key_col.lower() in lc:
+        out.rename(columns={lc[key_col.lower()]: key_col}, inplace=True)
 
     return out
 
-def load_events(path: str, key_col: str = "geoid") -> pd.DataFrame:
+def load_events(path: str) -> pd.DataFrame:
     """
-    Olay verisini CSV'den okur, esnek zaman & lat/lon normalize eder.
-    DÖNEN DF: her zaman 'ts' (UTC), mümkünse 'latitude'/'longitude' ve/veya 'geoid' içerir.
+    Basit CSV yükleyici. ts veya timestamp (vs) + (geoid ya da lat/lon) bekler.
+    Eksikse yine de df döndürür (boş da olabilir).
     """
     try:
         df = pd.read_csv(path)
-    except Exception as e:
-        print(f"[load_events] CSV okunamadı: {e}")
+    except Exception:
         return pd.DataFrame()
-
-    df = _normalize_latlon(df)
-    df = normalize_events_ts(df, key_col=key_col)
     return df
