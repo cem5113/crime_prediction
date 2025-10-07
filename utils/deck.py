@@ -31,7 +31,7 @@ def build_map_fast_deck(
                   .copy()
         )
         color_map = {"Yüksek": [214, 39, 40], "Orta": [255, 127, 14], "Hafif": [31, 119, 180]}
-        cells["color"] = cells["tier"].map(color_map).fillna([31, 119, 180])
+        cells["color"] = cells["tier"].apply(lambda t: color_map.get(t, [31, 119, 180]))
 
         layers.append(pdk.Layer(
             "ScatterplotLayer",
