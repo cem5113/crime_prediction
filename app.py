@@ -37,7 +37,13 @@ from utils.constants import (
     CATEGORIES,
 )
 from components.last_update import show_last_update_badge
-
+try:
+    from utils.reports import load_events
+except ModuleNotFoundError:
+    import os, sys
+    sys.path.append(os.path.join(os.path.dirname(__file__), "utils"))
+    from reports import load_events
+    
 # ── Sayfa ayarı: Streamlit'te en üstte olmalı
 st.set_page_config(page_title="SUTAM: Suç Tahmin Modeli", layout="wide")
 st.markdown(SMALL_UI_CSS, unsafe_allow_html=True)
