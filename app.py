@@ -155,9 +155,18 @@ st.sidebar.header("Devriye Parametreleri")
 engine = st.sidebar.radio("Harita motoru", ["Folium", "pydeck"], index=0, horizontal=True)
 show_popups   = st.sidebar.checkbox("Hücre popup'larını (en olası 3 suç) göster", value=True)
 
-# Hotspot ayarları
-show_hotspot        = True   # kalıcı hotspot katmanı açık
-show_temp_hotspot   = True   # geçici hotspot katmanı açık
+# Harita katmanları
+st.sidebar.subheader("Harita katmanları")
+show_risk_layer   = st.sidebar.checkbox("Tahmin katmanı (risk)", value=True)
+show_perm_hotspot = st.sidebar.checkbox("Sıcak nokta (kalıcı)", value=True)
+show_temp_hotspot = st.sidebar.checkbox("Geçici sıcak nokta (son olaylar)", value=True)
+
+hotspot_cat = st.sidebar.selectbox(
+    "Hotspot kategorisi",
+    options=["(Tüm suçlar)"] + CATEGORIES,
+    index=0,
+    help="Kalıcı/Geçici hotspot katmanları bu kategoriye göre gösterilir."
+)
 hotspot_cat = st.sidebar.selectbox(
     "Hotspot kategorisi",
     options=["(Tüm suçlar)"] + CATEGORIES,
@@ -300,12 +309,13 @@ if sekme == "Operasyon":
             temp_points["weight"] = ev_recent_df["weight"] if "weight" in ev_recent_df.columns else 1.0
         else:
             temp_points = pd.DataFrame(columns=["latitude", "longitude", "weight"])
+            temp_points_effective = temp_points if show_temp_hotspot else pd.DataFrame(columns=["latitude","longitude","weight"])
                 
         # ev_recent boşsa: üst risk hücrelerinden sentetik ısı üret (fallback)
-        if show_temp_hotspot and temp_points.empty and isinstance(agg, pd.DataFrame) and not agg.empty:
+        if show_temp_hotspot and temp_points.empty and isinstance(df_agg_for_map, pd.DataFrame) and not df_agg_for_map.empty:
             topn = 80
             tmp = (
-                agg.nlargest(topn, "expected")
+                df_agg_for_map.nlargest(topn, "expected")
                    .merge(GEO_DF[[KEY_COL, "centroid_lat", "centroid_lon"]], on=KEY_COL, how="left")
                    .dropna(subset=["centroid_lat", "centroid_lon"])
             )
@@ -316,7 +326,8 @@ if sekme == "Operasyon":
         
         # küçük sayaç (gösterge)
         st.sidebar.caption(f"Geçici hotspot noktası: {len(temp_points)}")
-        
+
+        df_agg_for_map = agg if show_risk_layer else agg.iloc[0:0]
         if agg is not None:
             if engine == "Folium":
 
@@ -361,17 +372,17 @@ if sekme == "Operasyon":
                     ev_recent = pd.DataFrame(columns=["latitude","longitude","weight"])
                 
                 m = build_map_fast(
-                    df_agg=agg,
+                    df_agg=df_agg_for_map,
                     geo_features=GEO_FEATURES,
                     geo_df=GEO_DF,
                     show_popups=show_popups,
                     patrol=st.session_state.get("patrol"),
                 
-                    show_hotspot=show_hotspot,         
+                    show_hotspot=show_perm_hotspot,
                     perm_hotspot_mode="heat",
                 
                     show_temp_hotspot=show_temp_hotspot,
-                    temp_hotspot_points=temp_points,    
+                    temp_hotspot_points=temp_points_effective,
                 )
 
                 import folium
