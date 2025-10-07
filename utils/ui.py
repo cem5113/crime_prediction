@@ -296,6 +296,7 @@ def build_map_fast(
     temp_scores_col: str = "hotspot_score",             # df_agg’te geçici skor sütunu adı
     anom_thr: float = 0.25                              # anomali eşiği (0–1 arası)
 ) -> folium.Map:
+    m = folium.Map(location=[37.7749, -122.4194], zoom_start=12, tiles="cartodbpositron")
 
     if df_agg is None or df_agg.empty:
         return m
@@ -344,14 +345,30 @@ def build_map_fast(
     fc = {"type": "FeatureCollection", "features": features}
 
     def style_fn(feat):
-        gid = feat.get("properties", {}).get("id")
-        return {
-            "fillColor": color_map.get(gid, "#9ecae1"),
-            "color": "#666666",
-            "weight": 0.3,
-            "fillOpacity": 0.55,
-        }
+        gj_kwargs = {"style_function": style_fn}
+    if show_popups:
+        try:
+            tt = folium.features.GeoJsonTooltip(
+                fields=["id", "tier", "expected"],
+                aliases=["GEOID", "Öncelik", "E[olay]"],
+                localize=True, sticky=False
+            )
+            gj_kwargs["tooltip"] = tt
+        except Exception:
+            pass
+        try:
+            pp = folium.features.GeoJsonPopup(
+                fields=["popup_html"], labels=False, parse_html=False, max_width=280
+            )
+            gj_kwargs["popup"] = pp
+        except Exception:
+            pass
 
+    try:
+        folium.GeoJson(fc, **gj_kwargs).add_to(m)
+    except Exception:
+        folium.GeoJson(fc, style_function=style_fn).add_to(m)
+        
     # --- Güvenli tooltip/popup (alanlar yoksa düşmesin)
     gj_kwargs = {"style_function": style_fn}
     if show_popups:
