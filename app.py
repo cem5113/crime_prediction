@@ -340,7 +340,7 @@ if sekme == "Operasyon":
                 assert isinstance(m, folium.Map), f"st_folium beklediği tipte değil: {type(m)}"
         
                 ret = st_folium(
-                    m, key="riskmap", height=540,
+                    m, key="riskmap", height=680,
                     returned_objects=["last_object_clicked", "last_clicked"]
                 )
                 if ret:
