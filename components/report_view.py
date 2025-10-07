@@ -20,20 +20,60 @@ except Exception:
 # =============== Yardımcılar ===============
 
 def _normalize_ts(df: pd.DataFrame) -> pd.DataFrame:
-    """ts/timestamp'u UTC'ye çevirir, hour/day vb. türetir."""
-    if df is None or df.empty:
+    """Olay verisinde zaman sütununu esnekçe bulur ve UTC'ye çevirir."""
+    if df is None or not isinstance(df, pd.DataFrame) or df.empty:
         return pd.DataFrame()
-    tcol = "ts" if "ts" in df.columns else ("timestamp" if "timestamp" in df.columns else None)
-    if tcol is None:
+
+    # Kolon adlarını normalize et (küçük harf, strip)
+    cols_map = {c: c.strip() for c in df.columns}
+    df = df.rename(columns=cols_map)
+    lower_cols = {c.lower(): c for c in df.columns}
+
+    # Yaygın aday isimler
+    candidates = [
+        "ts", "timestamp", "datetime", "date_time", "date",
+        "reported_at", "occurred_at", "time"
+    ]
+
+    ts_col = None
+    for name in candidates:
+        if name in lower_cols:
+            ts_col = lower_cols[name]
+            break
+
+    # Ayrı 'date' + 'time' kolonu varsa birleştir
+    if ts_col is None and ("date" in lower_cols and "time" in lower_cols):
+        c_date = lower_cols["date"]
+        c_time = lower_cols["time"]
+        tmp = df[[c_date, c_time]].astype(str).agg(" ".join, axis=1)
+        ts = pd.to_datetime(tmp, utc=True, errors="coerce")
+    elif ts_col is None:
+        # Hiçbiri yok → boş dön
         return pd.DataFrame()
+    else:
+        s = df[ts_col]
+
+        # Epoch tespit: tamamı sayısal ise ms/s dene
+        if np.issubdtype(s.dtype, np.number):
+            # Heuristik: büyük değerler genelde ms
+            # (1e12 üstü ms kabul edelim)
+            unit = "ms" if (pd.Series(s).dropna().astype(float).median() > 1e12) else "s"
+            ts = pd.to_datetime(s, unit=unit, utc=True, errors="coerce")
+        else:
+            # String → strip ve parse
+            ts = pd.to_datetime(s.astype(str).str.strip(), utc=True, errors="coerce")
+
     out = df.copy()
-    out["ts"] = pd.to_datetime(out[tcol], utc=True, errors="coerce")
+    out["ts"] = ts
     out = out.dropna(subset=["ts"])
+    if out.empty:
+        return pd.DataFrame()
+
     out["hour"] = out["ts"].dt.hour
     out["dow"]  = out["ts"].dt.dayofweek
     out["date"] = out["ts"].dt.date
     return out
-
+    
 def _geoid_filter_ui(ev: pd.DataFrame) -> pd.DataFrame:
     """Kolluk için anlaşılır alan seçimi: şehir geneli / tek / çoklu GEOID."""
     st.subheader("Bölge Seçimi", anchor=False)
@@ -219,7 +259,13 @@ def render_reports(events_df: pd.DataFrame | None,
     # 1) Girdi kontrol & normalize
     ev = _normalize_ts(events_df)
     if ev.empty:
-        st.warning("Olay veri seti yok veya zaman sütunu (ts/timestamp) bulunamadı.")
+        st.warning("Olay veri seti yok veya zaman sütunu parse edilemedi.")
+        # Teşhis: kolonları ve ilk satırları göster
+        if isinstance(events_df, pd.DataFrame):
+            st.caption("Mevcut kolonlar:")
+            st.code(", ".join(map(str, events_df.columns)))
+            st.caption("İlk 5 satır (ham):")
+            st.dataframe(events_df.head(5), use_container_width=True)
         return
 
     # 2) Filtreler: Bölge, tarih, kategori
