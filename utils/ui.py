@@ -383,7 +383,7 @@ def build_map_fast(
         except Exception:
             pass
 
-    fg_cells = folium.FeatureGroup(name="Risk Hücreleri", show=True)
+    fg_cells = folium.FeatureGroup(name=risk_layer_name, show=bool(risk_layer_show))
     try:
         folium.GeoJson(fc, style_function=style_fn, tooltip=tt, popup=pp).add_to(fg_cells)
     except Exception:
@@ -509,7 +509,7 @@ def build_map_fast(
             w   = cols.get("weight")
             if lat and lon:
                 pts = temp_hotspot_points[[lat, lon] + ([w] if w else [])].values.tolist()
-                fg_temp = folium.FeatureGroup(name="Geçici Hotspot", show=True)
+                fg_temp = folium.FeatureGroup(name=temp_hotspot_layer_name, show=bool(temp_hotspot_show))
                 HeatMap(pts, radius=16, blur=24, max_zoom=16).add_to(fg_temp)
                 fg_temp.add_to(m)
         except Exception:
@@ -539,7 +539,7 @@ def build_map_fast(
                     pts["weight"] = w
                     layer_name = ("Kalıcı Hotspot (ısı)" if not selected_type or selected_type in ("all", None)
                                   else f"Kalıcı Hotspot (ısı) · {selected_type}")
-                    fg_perm_heat = folium.FeatureGroup(name=layer_name, show=True)
+                    fg_perm_heat = folium.FeatureGroup(name=layer_name, show=bool(perm_hotspot_show))
                     HeatMap(
                         pts[["centroid_lat", "centroid_lon", "weight"]].values.tolist(),
                         radius=24, blur=28, max_zoom=16
@@ -558,7 +558,7 @@ def build_map_fast(
                         if not selected_type or selected_type in (None, "all")
                         else f"Kalıcı Hotspot · {selected_type}"
                     )
-                    fg_perm = folium.FeatureGroup(name=layer_name, show=True)
+                    fg_perm = folium.FeatureGroup(name=layer_name, show=bool(perm_hotspot_show))
                     for _, r in strong.iterrows():
                         folium.CircleMarker(
                             [float(r["centroid_lat"]), float(r["centroid_lon"])],
