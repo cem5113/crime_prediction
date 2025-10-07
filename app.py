@@ -205,6 +205,28 @@ if sekme == "Operasyon":
             if not ev_recent_df.empty:
                 ev_recent_df["weight"] = 1.0
 
+        # --- Geçici hotspot HeatMap girdisi ---
+        if isinstance(ev_recent, pd.DataFrame) and not ev_recent.empty:
+            temp_points = ev_recent[["latitude", "longitude", "weight"]].copy()
+        else:
+            temp_points = pd.DataFrame(columns=["latitude", "longitude", "weight"])
+        
+        # ev_recent boşsa: üst risk hücrelerinden sentetik ısı üret (fallback)
+        if show_temp_hotspot and temp_points.empty and isinstance(agg, pd.DataFrame) and not agg.empty:
+            topn = 80
+            tmp = (
+                agg.nlargest(topn, "expected")
+                   .merge(GEO_DF[[KEY_COL, "centroid_lat", "centroid_lon"]], on=KEY_COL, how="left")
+                   .dropna(subset=["centroid_lat", "centroid_lon"])
+            )
+            temp_points = tmp.rename(columns={"centroid_lat": "latitude", "centroid_lon": "longitude"})[
+                ["latitude", "longitude"]
+            ]
+            temp_points["weight"] = tmp["expected"].clip(lower=0).astype(float)
+        
+        # küçük sayaç (gösterge)
+        st.sidebar.caption(f"Geçici hotspot noktası: {len(temp_points)}")
+        
         if agg is not None:
             if engine == "Folium":
 
@@ -257,12 +279,11 @@ if sekme == "Operasyon":
                     show_poi=show_poi,
                     show_transit=show_transit,
                 
-                    show_hotspot=True,                 # kalıcı hotspot
-                    perm_hotspot_mode="heat",          # ısı modu
+                    show_hotspot=show_hotspot,         
+                    perm_hotspot_mode="heat",
                 
-                    show_temp_hotspot=True,            # geçici hotspot’u aç
-                    temp_hotspot_points=(ev_recent[["latitude","longitude","weight"]] if not ev_recent.empty else None),
-                    # selected_type=sel_type if sel_type not in (None, "all", "Tüm suçlar") else None,  # istersen
+                    show_temp_hotspot=show_temp_hotspot,
+                    temp_hotspot_points=temp_points,    
                 )
 
                 # Güvenlik: st_folium'a gerçekten folium.Map gidiyor mu?
