@@ -75,7 +75,7 @@ BASE_INT = precompute_base_intensity(GEO_DF)
 
 def now_sf_iso() -> str:
     return (datetime.utcnow() + timedelta(hours=SF_TZ_OFFSET)).isoformat(timespec="seconds")
-
+    
 # ── Sidebar
 st.sidebar.markdown("### Görünüm")
 sekme = st.sidebar.radio("", options=["Operasyon", "Raporlar"], index=0, horizontal=True)
@@ -84,57 +84,7 @@ st.sidebar.divider()
 # ---- GÜNCELLENEN KISIM ----
 st.sidebar.header("Devriye Parametreleri")
 engine = st.sidebar.radio("Harita motoru", ["Folium", "pydeck"], index=0, horizontal=True)
-
-# Harita katmanları
-st.sidebar.subheader("Harita katmanları")
-show_poi = st.sidebar.checkbox("POI overlay", value=False)
-show_transit = st.sidebar.checkbox("Toplu taşıma overlay", value=False)
-# 🔥 Hotspot katmanları + kategori
-show_hotspot = True
-show_temp_hotspot = True
-
-hotspot_cat = st.sidebar.selectbox(
-    "Hotspot kategorisi",
-    options=["(Tüm suçlar)"] + CATEGORIES,
-    index=0,
-    help="Kalıcı/Geçici hotspot katmanları bu kategoriye göre gösterilir."
-)
-
-# (İsteğe bağlı) Gün içi saat filtresi sadece GEÇİCİ hotspot için
-use_hot_hours = st.sidebar.checkbox("Geçici hotspot için gün içi saat filtresi", value=False)
-hot_hours_rng = st.sidebar.slider("Saat aralığı (hotspot)", 0, 24, (0, 24), disabled=not use_hot_hours)
-
-# Ufuk seçimi
-ufuk = st.sidebar.radio("Zaman Aralığı (şimdiden)", options=["24s", "48s", "7g"], index=0, horizontal=True)
-max_h, step = (24, 1) if ufuk == "24s" else (48, 3) if ufuk == "48s" else (7 * 24, 24)
-start_h, end_h = st.sidebar.slider(
-    "Saat filtresi",
-    min_value=0, max_value=max_h, value=(0, max_h), step=step
-)
-
-# Kategori filtresi (Hepsi desteği ile)
-sel_categories = st.sidebar.multiselect(
-    "Kategori",
-    ["(Hepsi)"] + CATEGORIES,
-    default=[]
-)
-if sel_categories and "(Hepsi)" in sel_categories:
-    filters = {"cats": CATEGORIES}   # tüm kategoriler
-else:
-    filters = {"cats": sel_categories or None}
-show_advanced = st.sidebar.checkbox("Gelişmiş metrikleri göster (analist)", value=False)
-
-st.sidebar.divider()
-st.sidebar.subheader("Devriye Parametreleri")
-K_planned    = st.sidebar.number_input("Planlanan devriye sayısı (K)", min_value=1, max_value=50, value=6, step=1)
-duty_minutes = st.sidebar.number_input("Devriye görev süresi (dk)",   min_value=15, max_value=600, value=120, step=15)
-cell_minutes = st.sidebar.number_input("Hücre başına ort. kontrol (dk)", min_value=2, max_value=30, value=6, step=1)
-
-colA, colB = st.sidebar.columns(2)
-btn_predict = colA.button("Tahmin et")
-btn_patrol  = colB.button("Devriye öner")
-show_popups = st.sidebar.checkbox("Hücre popup'larını (en olası 3 suç) göster", value=True)
-    
+   
 # ---- GÜNCELLENEN KISIM ----
 
 # ── State
@@ -206,6 +156,18 @@ if sekme == "Operasyon":
             if not ev_recent_df.empty:
                 ev_recent_df["weight"] = 1.0
 
+        # --- Grafik kapsamı için veri seti (df_plot) ---
+        if isinstance(ev_recent_df, pd.DataFrame) and not ev_recent_df.empty:
+            df_plot = ev_recent_df.copy()
+        else:
+            df_plot = pd.DataFrame(columns=["ts", "latitude", "longitude"])
+        
+        # "Seçili hücre" seçilmişse, olayları o hücreye indir (KEY_COL varsa)
+        if scope == "Seçili hücre" and st.session_state.get("explain", {}).get("geoid"):
+            gid = str(st.session_state["explain"]["geoid"])
+            if KEY_COL in df_plot.columns:
+                df_plot = df_plot[df_plot[KEY_COL].astype(str) == gid]
+                
         # --- Geçici hotspot HeatMap girdisi ---
         if isinstance(ev_recent_df, pd.DataFrame) and not ev_recent_df.empty:
             temp_points = ev_recent_df[["latitude", "longitude"]].copy()
@@ -316,7 +278,6 @@ if sekme == "Operasyon":
                         temp_hotspot_points=temp_points,
                     )
                     st.pydeck_chart(deck)
-                    st.pydeck_chart(deck)
                     # Not: pydeck tarafında tıklama yakalama ayrı yapılır.
                     ret = None
         
@@ -407,12 +368,12 @@ if sekme == "Operasyon":
         # === İstatistikler (tarihsel) ===
         st.subheader("İstatistikler (tarihsel)")
         
-        # gerekli bayrak/parametreler için güvenli varsayılanlar
+        # güvenli varsayılanlar
         events_all = st.session_state.get("events")
         try:
             _show_hotspot_flag = show_hotspot
         except NameError:
-            _show_hotspot_flag = True  # tanımlı değilse göster
+            _show_hotspot_flag = True
         try:
             _hotspot_cat = hotspot_cat
         except NameError:
@@ -424,42 +385,51 @@ if sekme == "Operasyon":
             _use_hot_hours = False
             _hot_hours_rng = (0, 24)
         
-        if _show_hotspot_flag and isinstance(events_all, pd.DataFrame) and not events_all.empty:
-            _ev = events_all.copy()
-        
-            # kategori filtresi (varsa)
-            if _hotspot_cat != "(Tüm suçlar)" and "type" in _ev.columns:
-                _ev = _ev[_ev["type"] == _hotspot_cat]
-        
-            # zaman sütununu normalize et (ts veya timestamp)
-            ts_col = "ts" if "ts" in _ev.columns else ("timestamp" if "timestamp" in _ev.columns else None)
-            if ts_col is None:
-                st.info("Etkinlik veri setinde zaman sütunu bulunamadı (ts/timestamp).")
+        if _show_hotspot_flag:
+            # ⬇️ df_plot varsa onu kullan; yoksa tüm olaylar
+            if isinstance(globals().get("df_plot", None), pd.DataFrame) and not df_plot.empty:
+                _ev = df_plot.copy()
+            elif isinstance(events_all, pd.DataFrame) and not events_all.empty:
+                _ev = events_all.copy()
             else:
-                _ev["ts_norm"] = pd.to_datetime(_ev[ts_col], utc=True, errors="coerce")
-                _ev = _ev.dropna(subset=["ts_norm"])
+                _ev = pd.DataFrame()
         
-                # gün içi saat filtresi (isteğe bağlı)
-                if _use_hot_hours:
-                    h1, h2 = _hot_hours_rng[0], (_hot_hours_rng[1] - 1) % 24  # [h1, h2)
-                    _ev = _ev[_ev["ts_norm"].dt.hour.between(h1, h2)]
+            if _ev.empty:
+                st.info("Gösterilecek veri yok.")
+            else:
+                # kategori filtresi (varsa)
+                if _hotspot_cat != "(Tüm suçlar)" and "type" in _ev.columns:
+                    _ev = _ev[_ev["type"] == _hotspot_cat]
         
-                if _ev.empty:
-                    st.info("Filtrelerden sonra gösterilecek kayıt kalmadı.")
+                # zaman sütunu (ts/timestamp) normalize
+                ts_col = "ts" if "ts" in _ev.columns else ("timestamp" if "timestamp" in _ev.columns else None)
+                if ts_col is None:
+                    st.info("Etkinlik veri setinde zaman sütunu bulunamadı (ts/timestamp).")
                 else:
-                    # Saatlik
-                    hourly = _ev.groupby(_ev["ts_norm"].dt.hour).size().reindex(range(24), fill_value=0)
-                    st.bar_chart(hourly.rename("Saatlik sayım"))
+                    _ev["ts_norm"] = pd.to_datetime(_ev[ts_col], utc=True, errors="coerce")
+                    _ev = _ev.dropna(subset=["ts_norm"])
         
-                    # Günlere göre
-                    dow = _ev.groupby(_ev["ts_norm"].dt.dayofweek).size().reindex(range(7), fill_value=0)
-                    dow.index = ["Pzt","Sal","Çar","Per","Cum","Cmt","Paz"]
-                    st.bar_chart(dow.rename("Günlere göre"))
+                    # gün içi saat filtresi (opsiyonel)
+                    if _use_hot_hours:
+                        h1, h2 = _hot_hours_rng[0], (_hot_hours_rng[1] - 1) % 24  # [h1, h2)
+                        _ev = _ev[_ev["ts_norm"].dt.hour.between(h1, h2)]
         
-                    # Aylara göre
-                    mon = _ev.groupby(_ev["ts_norm"].dt.month).size().reindex(range(1, 13), fill_value=0)
-                    mon.index = ["Oca","Şub","Mar","Nis","May","Haz","Tem","Ağu","Eyl","Eki","Kas","Ara"]
-                    st.bar_chart(mon.rename("Aylara göre"))
+                    if _ev.empty:
+                        st.info("Filtrelerden sonra gösterilecek kayıt kalmadı.")
+                    else:
+                        # Saatlik
+                        hourly = _ev.groupby(_ev["ts_norm"].dt.hour).size().reindex(range(24), fill_value=0)
+                        st.bar_chart(hourly.rename("Saatlik sayım"))
+        
+                        # Günlere göre
+                        dow = _ev.groupby(_ev["ts_norm"].dt.dayofweek).size().reindex(range(7), fill_value=0)
+                        dow.index = ["Pzt","Sal","Çar","Per","Cum","Cmt","Paz"]
+                        st.bar_chart(dow.rename("Günlere göre"))
+        
+                        # Aylara göre
+                        mon = _ev.groupby(_ev["ts_norm"].dt.month).size().reindex(range(1, 13), fill_value=0)
+                        mon.index = ["Oca","Şub","Mar","Nis","May","Haz","Tem","Ağu","Eyl","Eki","Kas","Ara"]
+                        st.bar_chart(mon.rename("Aylara göre"))
         else:
             st.caption("Kalıcı Hotspot açıkken ve veri mevcutsa tarihsel istatistikler burada gösterilir.")
 
@@ -504,4 +474,71 @@ if sekme == "Operasyon":
 # ── Raporlar
 else:
     st.header("Raporlar")
-    st.info("Rapor sekmesi, mevcut koddan benzer şekilde taşınabilir.")
+
+    ev = st.session_state.get("events_df")
+    if not isinstance(ev, pd.DataFrame) or ev.empty:
+        st.info("Olay veri seti yüklenemedi veya boş.")
+    else:
+        ev = ev.copy()
+
+        # Zaman sütununu normalize et
+        ts_col = "ts" if "ts" in ev.columns else ("timestamp" if "timestamp" in ev.columns else None)
+        if ts_col is None:
+            st.warning("Veride 'ts' veya 'timestamp' sütunu yok, rapor üretilemedi.")
+        else:
+            ev["ts"] = pd.to_datetime(ev[ts_col], utc=True, errors="coerce")
+            ev = ev.dropna(subset=["ts"])
+
+            cat_col = "type" if "type" in ev.columns else None
+
+            # ---- Filtreler ----
+            f1, f2, f3 = st.columns([1.2, 1, 1])
+            with f1:
+                tmin, tmax = ev["ts"].min().date(), ev["ts"].max().date()
+                d1, d2 = st.date_input("Tarih aralığı", value=(tmin, tmax))
+            with f2:
+                cats = sorted(ev[cat_col].dropna().unique().tolist()) if cat_col else []
+                sel_cats = st.multiselect("Suç türü", cats, default=cats) if cats else []
+            with f3:
+                gid_col = KEY_COL if KEY_COL in ev.columns else None
+                sel_gid = st.text_input("GEOID filtre (opsiyonel)", "")
+
+            # Filtreleri uygula
+            df = ev[(ev["ts"].dt.date >= d1) & (ev["ts"].dt.date <= d2)]
+            if cat_col and sel_cats:
+                df = df[df[cat_col].isin(sel_cats)]
+            if sel_gid and gid_col:
+                df = df[df[gid_col].astype(str) == str(sel_gid)]
+
+            st.caption(f"Toplam kayıt: {len(df)}")
+
+            if df.empty:
+                st.warning("Bu filtrelerle kayıt bulunamadı.")
+            else:
+                # Saat ve güne göre grafikler
+                g1, g2 = st.columns(2)
+                with g1:
+                    hourly = df.groupby(df["ts"].dt.hour).size().reindex(range(24), fill_value=0)
+                    st.bar_chart(hourly.rename("Saatlik sayım"))
+                with g2:
+                    dow = df.groupby(df["ts"].dt.dayofweek).size().reindex(range(7), fill_value=0)
+                    dow.index = ["Pzt","Sal","Çar","Per","Cum","Cmt","Paz"]
+                    st.bar_chart(dow.rename("Günlere göre"))
+
+                # En yoğun GEOID'ler (varsa)
+                if KEY_COL in df.columns:
+                    top_geo = (
+                        df[KEY_COL].value_counts()
+                        .head(15).rename_axis("GEOID").reset_index(name="adet")
+                    )
+                    st.subheader("En yoğun 15 GEOID")
+                    st.dataframe(top_geo, use_container_width=True)
+
+                # Dışa aktar
+                st.download_button(
+                    "Filtreli veriyi indir (CSV)",
+                    data=df.to_csv(index=False).encode("utf-8"),
+                    file_name="rapor_filtre.csv",
+                    mime="text/csv"
+                )
+
