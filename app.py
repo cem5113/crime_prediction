@@ -49,6 +49,8 @@ st.title("SUTAM: Suç Tahmin Modeli")
 
 try:
     events_df = load_events("data/events.csv")
+    if "events_df" not in st.session_state and isinstance(events_df, pd.DataFrame) and not events_df.empty:
+        st.session_state["events_df"] = events_df
     if not events_df.empty and "ts" in events_df.columns:
         data_upto_val = pd.to_datetime(events_df["ts"]).max().date().isoformat()
     else:
@@ -153,7 +155,8 @@ if sekme == "Operasyon":
             start_iso = start_dt.isoformat()
 
             events_df = load_events("data/events.csv")  # ts, lat, lon kolonları olmalı
-
+            st.session_state["events_df"] = events_df 
+            
             # Tahmin (near-repeat parametreleri ile)
             agg = aggregate_fast(
                 start_iso, horizon_h, GEO_DF, BASE_INT,
@@ -182,7 +185,8 @@ if sekme == "Operasyon":
         if isinstance(events_all, pd.DataFrame) and not events_all.empty:
             ev_recent_df = events_all.copy()
             # zaman filtresi
-            ev_recent_df["ts"] = pd.to_datetime(ev_recent_df.get("ts") or ev_recent_df.get("timestamp"), utc=True, errors="coerce")
+            _ts = "ts" if "ts" in ev_recent_df.columns else ("timestamp" if "timestamp" in ev_recent_df.columns else None)
+            ev_recent_df["ts"] = pd.to_datetime(ev_recent_df[_ts], utc=True, errors="coerce") if _ts else pd.NaT
             if "ts" in ev_recent_df.columns:
                 ev_recent_df = ev_recent_df[ev_recent_df["ts"] >= (pd.Timestamp.utcnow() - pd.Timedelta(hours=lookback_h))]
             # kategori filtresi (eğer veri ‘type’ içeriyorsa)
@@ -203,6 +207,47 @@ if sekme == "Operasyon":
 
         if agg is not None:
             if engine == "Folium":
+
+                lookback_h = int(np.clip(2 * st.session_state.get("horizon_h", 24), 24, 72))
+                
+                source = st.session_state.get("events_df", None)
+                if source is None:
+                    try:
+                        source = events_df  # aynı scope'ta varsa
+                    except NameError:
+                        source = None
+                
+                if isinstance(source, pd.DataFrame) and not source.empty:
+                    ev_recent = source.copy()
+                
+                    # zaman kolonu (ts veya timestamp)
+                    ts_col = "ts" if "ts" in ev_recent.columns else ("timestamp" if "timestamp" in ev_recent.columns else None)
+                    if ts_col is None:
+                        ev_recent = pd.DataFrame(columns=["latitude","longitude","weight"])  # kolon yoksa boş bırak
+                    else:
+                        ev_recent["timestamp"] = pd.to_datetime(ev_recent[ts_col], utc=True, errors="coerce")
+                        ev_recent = ev_recent.dropna(subset=["timestamp"])
+                
+                        # koordinat kolonlarını normalize et (lat/lon -> latitude/longitude)
+                        if "latitude" not in ev_recent.columns and "lat" in ev_recent.columns:
+                            ev_recent = ev_recent.rename(columns={"lat": "latitude"})
+                        if "longitude" not in ev_recent.columns and "lon" in ev_recent.columns:
+                            ev_recent = ev_recent.rename(columns={"lon": "longitude"})
+                
+                        # son lookback_h saat filtresi
+                        cutoff = pd.Timestamp.utcnow() - pd.Timedelta(hours=lookback_h)
+                        ev_recent = ev_recent[
+                            (ev_recent["timestamp"] >= cutoff)
+                            & ev_recent["latitude"].notna()
+                            & ev_recent["longitude"].notna()
+                        ]
+                
+                        # ağırlık sütunu
+                        if "weight" not in ev_recent.columns:
+                            ev_recent["weight"] = 1.0
+                else:
+                    ev_recent = pd.DataFrame(columns=["latitude","longitude","weight"])
+                
                 m = build_map_fast(
                     df_agg=agg,
                     geo_features=GEO_FEATURES,
@@ -215,9 +260,9 @@ if sekme == "Operasyon":
                     show_hotspot=True,                 # kalıcı hotspot
                     perm_hotspot_mode="heat",          # ısı modu
                 
-                    show_temp_hotspot=True,            # ✅ geçici hotspot’u aç
-                    temp_hotspot_points=ev_recent[["latitude","longitude","weight"]] if not ev_recent.empty else None,
-                    # selected_type=sel_type if sel_type not in (None, "all", "Tüm suçlar") else None,  # (opsiyonel)
+                    show_temp_hotspot=True,            # geçici hotspot’u aç
+                    temp_hotspot_points=(ev_recent[["latitude","longitude","weight"]] if not ev_recent.empty else None),
+                    # selected_type=sel_type if sel_type not in (None, "all", "Tüm suçlar") else None,  # istersen
                 )
 
                 # Güvenlik: st_folium'a gerçekten folium.Map gidiyor mu?
