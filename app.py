@@ -159,11 +159,13 @@ if sekme == "Operasyon":
         if agg is not None:
             if engine == "Folium":
                 m = build_map_fast(
-                    agg, GEO_FEATURES, GEO_DF,
-                    show_popups=show_popups,
-                    patrol=st.session_state.get("patrol"),
-                    show_poi=show_poi,
-                    show_transit=show_transit,
+                    df_agg, geo_features, geo_df,
+                    show_popups=True,
+                    show_poi=False, show_transit=False,
+                    show_hotspot=True,                 # kalıcı hotspot layer
+                    show_temp_hotspot=True,            # geçici hotspot layer
+                    temp_hotspot_points=ev_recent_df[["latitude","longitude","weight"]],
+                    selected_type="assault"            # ya da None/"all"
                 )
                 # Güvenlik: st_folium'a gerçekten folium.Map gidiyor mu?
                 import folium
