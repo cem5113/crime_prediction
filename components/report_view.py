@@ -214,6 +214,9 @@ def render_reports(events_df: pd.DataFrame | None,
     - agg_current: seçili ufuk için λ tablosu (KEY_COL, expected)
     - agg_long_term: uzun dönem λ (örn. 30g referans) varsa trend analizi yapılır.
     """
+    if isinstance(events_df, pd.DataFrame) and not events_df.empty:
+        st.caption(f"Rapor girdi boyutu: {events_df.shape}")
+    
     st.header("Suç Tahmin Raporu")
 
     # 1) Girdi kontrol & normalize (🔹 utils.reports.normalize_events_ts)
