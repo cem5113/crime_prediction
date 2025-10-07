@@ -507,21 +507,6 @@ def build_map_fast(
                 fg_temp.add_to(m)
         except Exception:
             pass
-
-    # === Geçici hotspot katmanı (son T saat ısı haritası) ===
-    if show_temp_hotspot and temp_hotspot_points is not None and not temp_hotspot_points.empty:
-        try:
-            cols = {c.lower(): c for c in temp_hotspot_points.columns}
-            lat = cols.get("latitude") or cols.get("lat")
-            lon = cols.get("longitude") or cols.get("lon")
-            w   = cols.get("weight")
-            if lat and lon:
-                pts = temp_hotspot_points[[lat, lon] + ([w] if w else [])].values.tolist()
-                fg_temp = folium.FeatureGroup(name="Geçici Hotspot", show=True)
-                HeatMap(pts, radius=16, blur=24, max_zoom=16).add_to(fg_temp)
-                fg_temp.add_to(m)
-        except Exception:
-            pass
             
     # === Kalıcı hotspot katmanı (kategoriye duyarlı) ===
     if show_hotspot:
