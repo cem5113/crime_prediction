@@ -90,8 +90,8 @@ st.sidebar.subheader("Harita katmanları")
 show_poi = st.sidebar.checkbox("POI overlay", value=False)
 show_transit = st.sidebar.checkbox("Toplu taşıma overlay", value=False)
 # 🔥 Hotspot katmanları + kategori
-show_hotspot = st.sidebar.checkbox("Kalıcı Hotspot katmanı", value=True)
-show_temp_hotspot = st.sidebar.checkbox("Geçici Hotspot katmanı", value=True)
+show_hotspot = True
+show_temp_hotspot = True
 
 hotspot_cat = st.sidebar.selectbox(
     "Hotspot kategorisi",
@@ -134,6 +134,7 @@ colA, colB = st.sidebar.columns(2)
 btn_predict = colA.button("Tahmin et")
 btn_patrol  = colB.button("Devriye öner")
 show_popups = st.sidebar.checkbox("Hücre popup'larını (en olası 3 suç) göster", value=True)
+    
 # ---- GÜNCELLENEN KISIM ----
 
 # ── State
@@ -206,11 +207,12 @@ if sekme == "Operasyon":
                 ev_recent_df["weight"] = 1.0
 
         # --- Geçici hotspot HeatMap girdisi ---
-        if isinstance(ev_recent, pd.DataFrame) and not ev_recent.empty:
-            temp_points = ev_recent[["latitude", "longitude", "weight"]].copy()
+        if isinstance(ev_recent_df, pd.DataFrame) and not ev_recent_df.empty:
+            temp_points = ev_recent_df[["latitude", "longitude"]].copy()
+            temp_points["weight"] = ev_recent_df["weight"] if "weight" in ev_recent_df.columns else 1.0
         else:
             temp_points = pd.DataFrame(columns=["latitude", "longitude", "weight"])
-        
+                
         # ev_recent boşsa: üst risk hücrelerinden sentetik ısı üret (fallback)
         if show_temp_hotspot and temp_points.empty and isinstance(agg, pd.DataFrame) and not agg.empty:
             topn = 80
