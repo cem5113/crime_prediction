@@ -17,8 +17,14 @@ from utils.geo import load_geoid_layer, resolve_clicked_gid
 from utils.forecast import precompute_base_intensity, aggregate_fast, prob_ge_k
 from utils.patrol import allocate_patrols
 from utils.ui import SMALL_UI_CSS, render_result_card, build_map_fast, render_kpi_row
-from utils.hotspots import temp_hotspot_scores
-from components.report_view import render_reports
+try:
+    from components.report_view import render_reports
+    HAS_REPORTS = True
+except ModuleNotFoundError:
+    HAS_REPORTS = False
+    def render_reports(**kwargs):
+        import streamlit as st
+        st.info("Raporlar modülü bulunamadı (components/report_view.py).")
 
 # Isı matrisi: ayrı modül varsa oradan, yoksa ui'dan
 try:
@@ -41,10 +47,28 @@ from components.last_update import show_last_update_badge
 
 try:
     from utils.reports import load_events
-except ModuleNotFoundError:
-    import sys, os
-    sys.path.append(os.path.join(os.path.dirname(__file__), "utils"))
-    from reports import load_events  # utils/reports.py
+except Exception:
+    # Son çare fallback: basit CSV okuyucu (uygun kolonu ts yapar)
+    def load_events(path: str) -> pd.DataFrame:
+        try:
+            df = pd.read_csv(path)
+        except Exception:
+            return pd.DataFrame()
+        lower = {str(c).strip().lower(): c for c in df.columns}
+        for cand in ["ts", "timestamp", "datetime", "date_time", "reported_at", "occurred_at", "time", "date"]:
+            if cand in lower:
+                ts_col = lower[cand]
+                break
+        else:
+            df["ts"] = pd.NaT
+            return df.dropna(subset=["ts"])
+        df["ts"] = pd.to_datetime(df[ts_col], utc=True, errors="coerce")
+        df = df.dropna(subset=["ts"])
+        if "latitude" not in df.columns and "lat" in df.columns:
+            df = df.rename(columns={"lat": "latitude"})
+        if "longitude" not in df.columns and "lon" in df.columns:
+            df = df.rename(columns={"lon": "longitude"})
+        return df
 
 # ── Sayfa ayarı: Streamlit'te en üstte olmalı
 st.set_page_config(page_title="SUTAM: Suç Tahmin Modeli", layout="wide")
@@ -89,7 +113,10 @@ def now_sf_iso() -> str:
     
 # ── Sidebar
 st.sidebar.markdown("### Görünüm")
-sekme = st.sidebar.radio("", options=["Operasyon", "Raporlar"], index=0, horizontal=True)
+sekme_options = ["Operasyon"]
+if HAS_REPORTS:
+    sekme_options.append("Raporlar")
+sekme = st.sidebar.radio("", options=sekme_options, index=0, horizontal=True)
 st.sidebar.divider()
 
 # ---- GÜNCELLENEN KISIM ----
@@ -230,10 +257,11 @@ if sekme == "Operasyon":
 
         # --- Grafik kapsamı için veri seti (df_plot) ---
         if isinstance(ev_recent_df, pd.DataFrame) and not ev_recent_df.empty:
-            df_plot = ev_recent_df.copy()
+            keep_cols = [c for c in ["ts", "latitude", "longitude", KEY_COL] if c in ev_recent_df.columns]
+            df_plot = ev_recent_df[keep_cols].copy()
         else:
             df_plot = pd.DataFrame(columns=["ts", "latitude", "longitude"])
-        
+                
         # "Seçili hücre" seçilmişse, olayları o hücreye indir (KEY_COL varsa)
         if scope == "Seçili hücre" and st.session_state.get("explain", {}).get("geoid"):
             gid = str(st.session_state["explain"]["geoid"])
@@ -474,25 +502,17 @@ if sekme == "Operasyon":
                 file_name=f"risk_export_{int(time.time())}.csv",
                 mime="text/csv"
             )
-if "events" not in st.session_state:
-    st.session_state["events"] = pd.DataFrame({
-        "ts": pd.date_range("2025-10-01", periods=50, freq="H"),
-        "type": ["Theft"]*25 + ["Assault"]*25,
-        "geoid": ["12345"]*50
-    })
 
-# ── Raporlar
-else:
-    # Kısa dönem: mevcut ufuk için λ tablosu
+elif sekme == "Raporlar":
     agg_current = st.session_state.get("agg")
-    # Uzun dönem referans λ (opsiyonel): varsa state'te tut (yoksa None)
-    agg_long = st.session_state.get("agg_long")
+    agg_long    = st.session_state.get("agg_long")
 
     events_src = st.session_state.get("events")
     if not isinstance(events_src, pd.DataFrame) or events_src.empty:
         events_src = st.session_state.get("events_df")
+
     render_reports(
-    events_df     = events_src,
-    agg_current   = agg_current,
-    agg_long_term = agg_long,
-)
+        events_df     = events_src,
+        agg_current   = agg_current,
+        agg_long_term = agg_long,
+    )
