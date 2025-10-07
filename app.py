@@ -57,13 +57,16 @@ try:
     events_df = load_events("data/events.csv")
     # Boş olsa bile state'e yaz (raporlar güvenli çalışsın)
     st.session_state["events_df"] = events_df if isinstance(events_df, pd.DataFrame) else None
+    # "events" key'ini de aynı anda doldur (yoksa yarat)
+    st.session_state.setdefault("events", events_df)
 
     if isinstance(events_df, pd.DataFrame) and not events_df.empty and "ts" in events_df.columns:
         data_upto_val = pd.to_datetime(events_df["ts"]).max().date().isoformat()
     else:
         data_upto_val = None
 except Exception:
-    st.session_state["events_df"] = None
+    st.session_state.setdefault("events_df", None)
+    st.session_state.setdefault("events", None)
     data_upto_val = None
     
 show_last_update_badge(
@@ -480,8 +483,7 @@ else:
     agg_long = st.session_state.get("agg_long")
 
     events_src = st.session_state.get("events") or st.session_state.get("events_df")
-    
-    render_reports(
+        render_reports(
         events_df     = events_src,
         agg_current   = agg_current,
         agg_long_term = agg_long,
