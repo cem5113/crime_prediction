@@ -30,9 +30,6 @@ try:
 except Exception:
     KEY_COL = "geoid"  
 
-# 🔹 Normalize fonksiyonunu utils'ten alıyoruz
-from utils.reports import normalize_events_ts
-
 # =============== Yardımcılar ===============
 
 def _geoid_filter_ui(ev: pd.DataFrame) -> pd.DataFrame:
