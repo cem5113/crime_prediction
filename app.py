@@ -60,7 +60,7 @@ try:
 except Exception:
     st.session_state["events_df"] = None
     data_upto_val = None
-
+    
 show_last_update_badge(
     data_upto=data_upto_val,
     model_version=MODEL_VERSION,
@@ -175,16 +175,15 @@ if sekme == "Operasyon":
                 "events": events_df,  # 🔹 geçici hotspot için son olaylara ihtiyaç var
             })
 
-            # >>> (OPSİYONEL) Uzun dönem referans λ: son 30 gün
             try:
                 long_start_iso = (
                     datetime.utcnow()
                     + timedelta(hours=SF_TZ_OFFSET - 30*24)
                 ).replace(minute=0, second=0, microsecond=0).isoformat()
-
+            
                 agg_long = aggregate_fast(
                     long_start_iso, 30*24, GEO_DF, BASE_INT,
-                    events=events_df,          # burada local events_df'i kullanıyoruz
+                    events=events_df,          # local değişkeni kullan
                     near_repeat_alpha=0.0,     # referans için NR etkisini kapatmak isteyebilirsin
                     filters=None
                 )
@@ -541,71 +540,11 @@ else:
     # Kısa dönem: mevcut ufuk için λ tablosu
     agg_current = st.session_state.get("agg")
     # Uzun dönem referans λ (opsiyonel): varsa state'te tut (yoksa None)
-    agg_long    = st.session_state.get("agg_long")
+    agg_long = st.session_state.get("agg_long")
 
     render_reports(
         events_df     = st.session_state.get("events_df"),
         agg_current   = agg_current,
         agg_long_term = agg_long,
     )
-        # Zaman sütununu normalize et
-        ts_col = "ts" if "ts" in ev.columns else ("timestamp" if "timestamp" in ev.columns else None)
-        if ts_col is None:
-            st.warning("Veride 'ts' veya 'timestamp' sütunu yok, rapor üretilemedi.")
-        else:
-            ev["ts"] = pd.to_datetime(ev[ts_col], utc=True, errors="coerce")
-            ev = ev.dropna(subset=["ts"])
-
-            cat_col = "type" if "type" in ev.columns else None
-
-            # ---- Filtreler ----
-            f1, f2, f3 = st.columns([1.2, 1, 1])
-            with f1:
-                tmin, tmax = ev["ts"].min().date(), ev["ts"].max().date()
-                d1, d2 = st.date_input("Tarih aralığı", value=(tmin, tmax))
-            with f2:
-                cats = sorted(ev[cat_col].dropna().unique().tolist()) if cat_col else []
-                sel_cats = st.multiselect("Suç türü", cats, default=cats) if cats else []
-            with f3:
-                gid_col = KEY_COL if KEY_COL in ev.columns else None
-                sel_gid = st.text_input("GEOID filtre (opsiyonel)", "")
-
-            # Filtreleri uygula
-            df = ev[(ev["ts"].dt.date >= d1) & (ev["ts"].dt.date <= d2)]
-            if cat_col and sel_cats:
-                df = df[df[cat_col].isin(sel_cats)]
-            if sel_gid and gid_col:
-                df = df[df[gid_col].astype(str) == str(sel_gid)]
-
-            st.caption(f"Toplam kayıt: {len(df)}")
-
-            if df.empty:
-                st.warning("Bu filtrelerle kayıt bulunamadı.")
-            else:
-                # Saat ve güne göre grafikler
-                g1, g2 = st.columns(2)
-                with g1:
-                    hourly = df.groupby(df["ts"].dt.hour).size().reindex(range(24), fill_value=0)
-                    st.bar_chart(hourly.rename("Saatlik sayım"))
-                with g2:
-                    dow = df.groupby(df["ts"].dt.dayofweek).size().reindex(range(7), fill_value=0)
-                    dow.index = ["Pzt","Sal","Çar","Per","Cum","Cmt","Paz"]
-                    st.bar_chart(dow.rename("Günlere göre"))
-
-                # En yoğun GEOID'ler (varsa)
-                if KEY_COL in df.columns:
-                    top_geo = (
-                        df[KEY_COL].value_counts()
-                        .head(15).rename_axis("GEOID").reset_index(name="adet")
-                    )
-                    st.subheader("En yoğun 15 GEOID")
-                    st.dataframe(top_geo, use_container_width=True)
-
-                # Dışa aktar
-                st.download_button(
-                    "Filtreli veriyi indir (CSV)",
-                    data=df.to_csv(index=False).encode("utf-8"),
-                    file_name="rapor_filtre.csv",
-                    mime="text/csv"
-                )
 
