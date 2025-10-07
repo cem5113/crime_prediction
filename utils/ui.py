@@ -271,9 +271,9 @@ def render_result_card(df_agg: pd.DataFrame, geoid: str, start_iso: str, horizon
         for c in cues:
             st.write(f"- {c}")
 
-# ───────────── Harita ─────────────
 def color_for_tier(tier: str) -> str:
     return {"Yüksek": "#d62728", "Orta": "#ff7f0e", "Hafif": "#1f77b4"}.get(tier, "#1f77b4")
+
 
 def build_map_fast(
     df_agg: pd.DataFrame,
@@ -284,86 +284,90 @@ def build_map_fast(
     *,
     show_poi: bool = False,
     show_transit: bool = False,
-    # 🔻 yeni parametreler:
-    show_hotspot: bool = False,                
-    show_temp_hotspot: bool = False,          
+    # 🔻 yeni parametreler
+    show_hotspot: bool = False,                 # Kalıcı hotspot (uzun dönem)
+    show_temp_hotspot: bool = False,            # Geçici hotspot (son T saat)
     temp_hotspot_points: pd.DataFrame | None = None,  # [latitude, longitude, weight]
-    selected_type: str | None = None          
+    selected_type: str | None = None            # None/"all" => expected; yoksa seçili kategori (örn. "assault")
 ) -> folium.Map:
+    m = folium.Map(location=[37.7749, -122.4194], zoom_start=12, tiles="cartodbpositron")
 
-    # --- hücre stilleri & popup
-    color_map = {r[KEY_COL]: color_for_tier(r["tier"]) for _, r in df_agg.iterrows()}
+    if df_agg is None or df_agg.empty:
+        return m
+
+    # --- Hücre stilleri & popup verisini hazırlamak için kolay erişim sözlükleri
+    color_map = {r[KEY_COL]: color_for_tier(str(r.get("tier", ""))) for _, r in df_agg.iterrows()}
     data_map = df_agg.set_index(KEY_COL).to_dict(orient="index")
 
+    # --- GeoJSON FeatureCollection'ı oluştur / properties.id alanını garanti et
     features = []
     for feat in geo_features:
         f = json.loads(json.dumps(feat))  # derin kopya
-        gid = f["properties"].get("id")
+        props = f.get("properties", {})
+        # id yoksa geoid/GEOID'den üret
+        if "id" not in props:
+            if "geoid" in props:
+                props["id"] = props["geoid"]
+            elif "GEOID" in props:
+                props["id"] = props["GEOID"]
+            else:
+                props["id"] = None
+        gid = props.get("id")
+
         row = data_map.get(gid)
         if row:
-            expected = float(row["expected"])
-            tier     = str(row["tier"])
-            q10      = float(row.get("q10", 0.0))
-            q90      = float(row.get("q90", 0.0))
-            types    = {t: float(row.get(t, 0.0)) for t in CRIME_TYPES}
-            top3     = sorted(types.items(), key=lambda x: x[1], reverse=True)[:3]
+            expected = float(row.get("expected", 0.0))
+            tier = str(row.get("tier", "—"))
+            q10 = float(row.get("q10", 0.0))
+            q90 = float(row.get("q90", 0.0))
+            # Suç türleri listesi boşsa da çalışsın
+            types = {t: float(row.get(t, 0.0)) for t in (CRIME_TYPES or [])}
+            top3 = sorted(types.items(), key=lambda x: x[1], reverse=True)[:3]
             top_html = "".join([f"<li>{t}: {v:.2f}</li>" for t, v in top3])
-            f["properties"]["popup_html"] = (
+
+            props["popup_html"] = (
                 f"<b>{gid}</b><br/>E[olay] (ufuk): {expected:.2f} • Öncelik: <b>{tier}</b><br/>"
                 f"<b>En olası 3 tip</b><ul style='margin-left:12px'>{top_html}</ul>"
                 f"<i>Belirsizlik (saatlik ort.): q10={q10:.2f}, q90={q90:.2f}</i>"
             )
-            f["properties"]["expected"] = round(expected, 2)
-            f["properties"]["tier"]     = tier
+            props["expected"] = round(expected, 2)
+            props["tier"] = tier
+
+        f["properties"] = props
         features.append(f)
 
     fc = {"type": "FeatureCollection", "features": features}
 
     def style_fn(feat):
-        gid = feat["properties"].get("id")
-        return {"fillColor": color_map.get(gid, "#9ecae1"), "color": "#666666", "weight": 0.3, "fillOpacity": 0.55}
+        gid = feat.get("properties", {}).get("id")
+        return {
+            "fillColor": color_map.get(gid, "#9ecae1"),
+            "color": "#666666",
+            "weight": 0.3,
+            "fillOpacity": 0.55,
+        }
 
-    tooltip = (folium.GeoJsonTooltip(
-        fields=["id", "tier", "expected"],
-        aliases=["GEOID", "Öncelik", "E[olay]"],
-        localize=True, sticky=False
-    ) if show_popups else None)
+    # --- Güvenli tooltip/popup (alanlar yoksa düşmesin)
+    tooltip = None
+    popup = None
+    if show_popups:
+        try:
+            tooltip = folium.GeoJsonTooltip(
+                fields=["id", "tier", "expected"],
+                aliases=["GEOID", "Öncelik", "E[olay]"],
+                localize=True,
+                sticky=False,
+            )
+        except Exception:
+            tooltip = None
+        try:
+            popup = folium.GeoJsonPopup(
+                fields=["popup_html"], labels=False, parse_html=False, max_width=280
+            )
+        except Exception:
+            popup = None
 
-# --- Güvenli tooltip/popup ve id alanı normalize ---
-ID_PROP_KEY = "id"  # GeoJSON'da properties.geoid kullanıyorsan "geoid" yap
-
-# Feature'ların properties.id alanını garanti altına al
-for f in fc.get("features", []):
-    props = f.get("properties", {})
-    if ID_PROP_KEY not in props:
-        if "geoid" in props and "id" not in props:
-            props["id"] = props["geoid"]
-        if "id" not in props:  # son çare
-            props["id"] = props.get("GEOID", "NA")
-
-tooltip = None
-popup = None
-if show_popups:
-    try:
-        tooltip = folium.GeoJsonTooltip(
-            fields=["id", "tier", "expected"],
-            aliases=["GEOID", "Öncelik", "E[olay]"],
-            localize=True,
-            sticky=False
-        )
-    except Exception:
-        tooltip = None
-    try:
-        popup = folium.GeoJsonPopup(
-            fields=["popup_html"],
-            labels=False,
-            parse_html=False,
-            max_width=280
-        )
-    except Exception:
-        popup = None
-
-folium.GeoJson(fc, style_function=style_fn, tooltip=tooltip, popup=popup).add_to(m)
+    folium.GeoJson(fc, style_function=style_fn, tooltip=tooltip, popup=popup).add_to(m)
 
     # ---------- POI / Transit overlay'leri ----------
     def _read_first_existing_csv(paths: list[str]) -> pd.DataFrame | None:
@@ -376,30 +380,111 @@ folium.GeoJson(fc, style_function=style_fn, tooltip=tooltip, popup=popup).add_to
 
     if show_poi:
         try:
-            poi_df = _read_first_existing_csv([
-                "data/sf_pois_cleaned_with_geoid.csv",
-                "data/poi.csv",
-            ])
+            poi_df = _read_first_existing_csv(
+                ["data/sf_pois_cleaned_with_geoid.csv", "data/poi.csv"]
+            )
             if poi_df is not None and not poi_df.empty:
-                lat_col = "latitude" if "latitude" in poi_df.columns else ("lat" if "lat" in poi_df.columns else None)
-                lon_col = "longitude" if "longitude" in poi_df.columns else ("lon" if "lon" in poi_df.columns else None)
+                lat_col = (
+                    "latitude"
+                    if "latitude" in poi_df.columns
+                    else ("lat" if "lat" in poi_df.columns else None)
+                )
+                lon_col = (
+                    "longitude"
+                    if "longitude" in poi_df.columns
+                    else ("lon" if "lon" in poi_df.columns else None)
+                )
                 if lat_col and lon_col:
                     fg_poi = folium.FeatureGroup(name="POI", show=True)
                     for _, r in poi_df.head(2000).iterrows():  # performans sınırı
                         folium.CircleMarker(
                             location=[float(r[lat_col]), float(r[lon_col])],
-                            radius=2, color="#3b82f6", fill=True, fill_color="#3b82f6", fill_opacity=0.6, opacity=0.7
+                            radius=2,
+                            color="#3b82f6",
+                            fill=True,
+                            fill_color="#3b82f6",
+                            fill_opacity=0.6,
+                            opacity=0.7,
                         ).add_to(fg_poi)
                     fg_poi.add_to(m)
+        except Exception:
+            pass
+
+    if show_transit:
+        try:
+            bus_df = _read_first_existing_csv(
+                [
+                    "data/sf_bus_stops_with_geoid.csv",
+                    "data/sf_bus_stops.csv",
+                    "data/transit_bus_stops.csv",
+                ]
+            )
+            train_df = _read_first_existing_csv(
+                [
+                    "data/sf_train_stops_with_geoid.csv",
+                    "data/sf_train_stops.csv",
+                    "data/transit_train_stops.csv",
+                ]
+            )
+            fg_tr = folium.FeatureGroup(name="Transit", show=True)
+
+            if bus_df is not None and not bus_df.empty:
+                blat = (
+                    "latitude"
+                    if "latitude" in bus_df.columns
+                    else ("lat" if "lat" in bus_df.columns else None)
+                )
+                blon = (
+                    "longitude"
+                    if "longitude" in bus_df.columns
+                    else ("lon" if "lon" in bus_df.columns else None)
+                )
+                if blat and blon:
+                    for _, r in bus_df.head(2000).iterrows():
+                        folium.CircleMarker(
+                            location=[float(r[blat]), float(r[blon])],
+                            radius=1.6,
+                            color="#10b981",
+                            fill=True,
+                            fill_color="#10b981",
+                            fill_opacity=0.55,
+                            opacity=0.6,
+                        ).add_to(fg_tr)
+
+            if train_df is not None and not train_df.empty:
+                tlat = (
+                    "latitude"
+                    if "latitude" in train_df.columns
+                    else ("lat" if "lat" in train_df.columns else None)
+                )
+                tlon = (
+                    "longitude"
+                    if "longitude" in train_df.columns
+                    else ("lon" if "lon" in train_df.columns else None)
+                )
+                if tlat and tlon:
+                    for _, r in train_df.head(1500).iterrows():
+                        folium.CircleMarker(
+                            location=[float(r[tlat]), float(r[tlon])],
+                            radius=2.2,
+                            color="#ef4444",
+                            fill=True,
+                            fill_color="#ef4444",
+                            fill_opacity=0.6,
+                            opacity=0.75,
+                        ).add_to(fg_tr)
+
+            if len(getattr(fg_tr, "_children", {})) > 0:
+                fg_tr.add_to(m)
         except Exception:
             pass
 
     # === Kalıcı hotspot katmanı (kategoriye duyarlı) ===
     if show_hotspot:
         try:
-            # metric: seçili kategori varsa o λ sütunu; yoksa expected
             metric_col = None
-            if selected_type and selected_type in CRIME_TYPES and selected_type in df_agg.columns:
+            # seçili kategori df_agg'ta varsa onu kullan; yoksa expected
+            if selected_type and selected_type in df_agg.columns:
                 metric_col = selected_type
             elif "expected" in df_agg.columns:
                 metric_col = "expected"
@@ -408,17 +493,25 @@ folium.GeoJson(fc, style_function=style_fn, tooltip=tooltip, popup=popup).add_to
                 thr = float(np.quantile(df_agg[metric_col].to_numpy(), 0.90))
                 strong = df_agg[df_agg[metric_col] >= thr].merge(
                     geo_df[[KEY_COL, "centroid_lat", "centroid_lon"]],
-                    on=KEY_COL, how="left"
+                    on=KEY_COL,
+                    how="left",
                 )
                 if not strong.empty:
-                    layer_name = ("Kalıcı Hotspot" if not selected_type or selected_type in (None, "all")
-                                  else f"Kalıcı Hotspot · {selected_type}")
+                    layer_name = (
+                        "Kalıcı Hotspot"
+                        if not selected_type or selected_type in (None, "all")
+                        else f"Kalıcı Hotspot · {selected_type}"
+                    )
                     fg_perm = folium.FeatureGroup(name=layer_name, show=True)
                     for _, r in strong.iterrows():
                         folium.CircleMarker(
                             [float(r["centroid_lat"]), float(r["centroid_lon"])],
-                            radius=4, color="#8b0000",
-                            fill=True, fill_color="#8b0000", fill_opacity=0.5, opacity=0.8
+                            radius=4,
+                            color="#8b0000",
+                            fill=True,
+                            fill_color="#8b0000",
+                            fill_opacity=0.5,
+                            opacity=0.8,
                         ).add_to(fg_perm)
                     fg_perm.add_to(m)
         except Exception:
@@ -430,80 +523,52 @@ folium.GeoJson(fc, style_function=style_fn, tooltip=tooltip, popup=popup).add_to
             cols = {c.lower(): c for c in temp_hotspot_points.columns}
             lat = cols.get("latitude") or cols.get("lat")
             lon = cols.get("longitude") or cols.get("lon")
-            w   = cols.get("weight")
+            w = cols.get("weight")
             if lat and lon:
                 pts = temp_hotspot_points[[lat, lon] + ([w] if w else [])].values.tolist()
                 HeatMap(pts, name="Geçici Hotspot", radius=16, blur=24, max_zoom=16).add_to(m)
         except Exception:
             pass
 
-    if show_transit:
-        try:
-            bus_df = _read_first_existing_csv([
-                "data/sf_bus_stops_with_geoid.csv",
-                "data/sf_bus_stops.csv",
-                "data/transit_bus_stops.csv",
-            ])
-            train_df = _read_first_existing_csv([
-                "data/sf_train_stops_with_geoid.csv",
-                "data/sf_train_stops.csv",
-                "data/transit_train_stops.csv",
-            ])
-            fg_tr = folium.FeatureGroup(name="Transit", show=True)
-
-            if bus_df is not None and not bus_df.empty:
-                blat = "latitude" if "latitude" in bus_df.columns else ("lat" if "lat" in bus_df.columns else None)
-                blon = "longitude" if "longitude" in bus_df.columns else ("lon" if "lon" in bus_df.columns else None)
-                if blat and blon:
-                    for _, r in bus_df.head(2000).iterrows():
-                        folium.CircleMarker(
-                            location=[float(r[blat]), float(r[blon])],
-                            radius=1.6, color="#10b981", fill=True, fill_color="#10b981", fill_opacity=0.55, opacity=0.6
-                        ).add_to(fg_tr)
-
-            if train_df is not None and not train_df.empty:
-                tlat = "latitude" if "latitude" in train_df.columns else ("lat" if "lat" in train_df.columns else None)
-                tlon = "longitude" if "longitude" in train_df.columns else ("lon" if "lon" in train_df.columns else None)
-                if tlat and tlon:
-                    for _, r in train_df.head(1500).iterrows():
-                        folium.CircleMarker(
-                            location=[float(r[tlat]), float(r[tlon])],
-                            radius=2.2, color="#ef4444", fill=True, fill_color="#ef4444", fill_opacity=0.6, opacity=0.75
-                        ).add_to(fg_tr)
-
-            if len(getattr(fg_tr, "_children", {})) > 0:
-                fg_tr.add_to(m)
-        except Exception:
-            pass
-
+    # Katman kontrolü (en sonda)
     try:
         folium.LayerControl(collapsed=True).add_to(m)
     except Exception:
         pass
 
     # Üst %1 uyarı
-    thr99 = np.quantile(df_agg["expected"].to_numpy(), 0.99)
-    urgent = df_agg[df_agg["expected"] >= thr99].merge(
-        geo_df[[KEY_COL, "centroid_lat", "centroid_lon"]], on=KEY_COL
-    )
-    for _, r in urgent.iterrows():
-        folium.CircleMarker(
-            location=[r["centroid_lat"], r["centroid_lon"]],
-            radius=5, color="#000", fill=True, fill_color="#ff0000"
-        ).add_to(m)
+    try:
+        thr99 = float(np.quantile(df_agg["expected"].to_numpy(), 0.99))
+        urgent = df_agg[df_agg["expected"] >= thr99].merge(
+            geo_df[[KEY_COL, "centroid_lat", "centroid_lon"]], on=KEY_COL
+        )
+        for _, r in urgent.iterrows():
+            folium.CircleMarker(
+                location=[float(r["centroid_lat"]), float(r["centroid_lon"])],
+                radius=5,
+                color="#000",
+                fill=True,
+                fill_color="#ff0000",
+            ).add_to(m)
+    except Exception:
+        pass
 
-    # Devriye rotaları
+    # Devriye rotaları (varsa)
     if patrol and patrol.get("zones"):
         for z in patrol["zones"]:
-            folium.PolyLine(z["route"], tooltip=f"{z['id']} rota").add_to(m)
-            folium.Marker(
-                [z["centroid"]["lat"], z["centroid"]["lon"]],
-                icon=folium.DivIcon(html="<div style='background:#111;color:#fff;padding:2px 6px;border-radius:6px'>"
-                                         f" {z['id']} </div>")
-            ).add_to(m)
+            try:
+                folium.PolyLine(z["route"], tooltip=f"{z['id']} rota").add_to(m)
+                folium.Marker(
+                    [z["centroid"]["lat"], z["centroid"]["lon"]],
+                    icon=folium.DivIcon(
+                        html="<div style='background:#111;color:#fff;padding:2px 6px;border-radius:6px'>"
+                        f" {z['id']} </div>"
+                    ),
+                ).add_to(m)
+            except Exception:
+                continue
 
     return m
-
 
 # ───────────── Gün × Saat Isı Matrisi ─────────────
 def render_day_hour_heatmap(agg: pd.DataFrame, start_iso: str | None = None, horizon_h: int | None = None):
