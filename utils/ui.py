@@ -10,7 +10,7 @@ import folium
 from folium.plugins import HeatMap
 import streamlit as st
 
-# 🔒 KEY_COL / CRIME_TYPES: güvenli import + fallback
+# 🔒 constants (safe import; dairesel importu önler)
 try:
     from utils.constants import KEY_COL, CRIME_TYPES
 except Exception:
@@ -329,47 +329,41 @@ def build_map_fast(
         localize=True, sticky=False
     ) if show_popups else None)
 
-ID_PROP_KEY = "id"  # eğer GeoJSON'unuzda "geoid" kullanılıyorsa burayı "geoid" yapın
+# --- Güvenli tooltip/popup ve id alanı normalize ---
+ID_PROP_KEY = "id"  # GeoJSON'da properties.geoid kullanıyorsan "geoid" yap
 
-# FeatureCollection içindeki özelliklerde id anahtarını normalize et
+# Feature'ların properties.id alanını garanti altına al
 for f in fc.get("features", []):
     props = f.get("properties", {})
     if ID_PROP_KEY not in props:
-        # "geoid" varsa id'ye kopyala
         if "geoid" in props and "id" not in props:
             props["id"] = props["geoid"]
-        # hiçbiri yoksa sahte id atayın ki tooltip NameError/KeyError’a düşmesin
-        if "id" not in props:
+        if "id" not in props:  # son çare
             props["id"] = props.get("GEOID", "NA")
 
-    # tooltip/popup güvenli tanım (koşullu)
-    tooltip = None
-    popup = None
-    if show_popups:
-        try:
-            tooltip = folium.GeoJsonTooltip(
-                fields=["id", "tier", "expected"],
-                aliases=["GEOID", "Öncelik", "E[olay]"],
-                localize=True, sticky=False
-            )
-        except Exception:
-            tooltip = None
-        try:
-            popup = folium.GeoJsonPopup(
-                fields=["popup_html"],
-                labels=False, parse_html=False, max_width=280
-            )
-        except Exception:
-            popup = None
-    
-    # GeoJson'u güvenli biçimde ekle
+tooltip = None
+popup = None
+if show_popups:
     try:
-        folium.GeoJson(fc, style_function=style_fn, tooltip=tooltip, popup=popup).add_to(m)
-    except NameError:
-        # Olası tanım hatalarında en azından katman çizilsin
-        folium.GeoJson(fc, style_function=style_fn).add_to(m)
+        tooltip = folium.GeoJsonTooltip(
+            fields=["id", "tier", "expected"],
+            aliases=["GEOID", "Öncelik", "E[olay]"],
+            localize=True,
+            sticky=False
+        )
+    except Exception:
+        tooltip = None
+    try:
+        popup = folium.GeoJsonPopup(
+            fields=["popup_html"],
+            labels=False,
+            parse_html=False,
+            max_width=280
+        )
+    except Exception:
+        popup = None
 
-    folium.GeoJson(fc, style_function=style_fn, tooltip=tooltip, popup=popup).add_to(m)
+folium.GeoJson(fc, style_function=style_fn, tooltip=tooltip, popup=popup).add_to(m)
 
     # ---------- POI / Transit overlay'leri ----------
     def _read_first_existing_csv(paths: list[str]) -> pd.DataFrame | None:
