@@ -18,7 +18,6 @@ from utils.forecast import precompute_base_intensity, aggregate_fast, prob_ge_k
 from utils.patrol import allocate_patrols
 from utils.ui import SMALL_UI_CSS, render_result_card, build_map_fast, render_kpi_row
 from utils.hotspots import temp_hotspot_scores
-from components.report_view import render_reports
 
 # Isı matrisi: ayrı modül varsa oradan, yoksa ui'dan
 try:
@@ -39,13 +38,6 @@ from utils.constants import (
 )
 from components.last_update import show_last_update_badge
 
-try:
-    from utils.reports import load_events
-except ModuleNotFoundError:
-    import sys, os
-    sys.path.append(os.path.join(os.path.dirname(__file__), "utils"))
-    from reports import load_events  # utils/reports.py
-
 # ── Sayfa ayarı: Streamlit'te en üstte olmalı
 st.set_page_config(page_title="SUTAM: Suç Tahmin Modeli", layout="wide")
 st.markdown(SMALL_UI_CSS, unsafe_allow_html=True)
@@ -55,7 +47,6 @@ st.title("SUTAM: Suç Tahmin Modeli")
 
 try:
     events_df = load_events("data/events.csv")
-    # Boş olsa bile state'e yaz (raporlar güvenli çalışsın)
     st.session_state["events_df"] = events_df if isinstance(events_df, pd.DataFrame) else None
     # "events" key'ini de aynı anda doldur (yoksa yarat)
     st.session_state["events"] = st.session_state["events_df"]
@@ -89,7 +80,7 @@ def now_sf_iso() -> str:
     
 # ── Sidebar
 st.sidebar.markdown("### Görünüm")
-sekme = st.sidebar.radio("", options=["Operasyon", "Raporlar"], index=0, horizontal=True)
+sekme = st.sidebar.radio("", options=["Operasyon"], index=0, horizontal=True)
 st.sidebar.divider()
 
 # ---- GÜNCELLENEN KISIM ----
