@@ -70,6 +70,45 @@ def load_events(path: str) -> pd.DataFrame:
 st.set_page_config(page_title="SUTAM: Suç Tahmin Modeli", layout="wide")
 st.markdown(SMALL_UI_CSS, unsafe_allow_html=True)
 
+# Yazıları (tablolar hariç) biraz büyüt
+st.markdown("""
+<style>
+/* === Genel metin (tablo/datarame hariç) === */
+[data-testid="stAppViewContainer"] p,
+[data-testid="stAppViewContainer"] li,
+[data-testid="stAppViewContainer"] label,
+[data-testid="stAppViewContainer"] span {
+  font-size: 1.08rem;              /* arttırmak için 1.12rem, 1.15rem yapabilirsin */
+}
+
+/* Başlıklar */
+h1 { font-size: 2.0rem; }
+h2 { font-size: 1.60rem; }
+h3 { font-size: 1.25rem; }
+
+/* Sidebar metinleri */
+section[data-testid="stSidebar"] * {
+  font-size: 1.02rem;
+}
+
+/* Metric bileşeni */
+[data-testid="stMetricLabel"] { font-size: 1.00rem; }
+[data-testid="stMetricValue"] { font-size: 1.35rem; }
+
+/* Buton ve radyo/checkbox etiketleri */
+button, [data-baseweb="button"] { font-size: 1.00rem; }
+div[role="radiogroup"] label p { font-size: 1.05rem; }
+
+/* === Tabloları büyütme (varsayılan boyutta kalsın) === */
+div[data-testid="stDataFrame"] *,
+table[data-testid="stTable"] *,
+.stTable * {
+  font-size: 0.875rem !important;
+}
+</style>
+""", unsafe_allow_html=True)
+
+
 # ── Başlık ve "Son güncelleme" rozetini göster
 st.title("SUTAM: Suç Tahmin Modeli")
 
