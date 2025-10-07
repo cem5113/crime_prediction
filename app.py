@@ -12,6 +12,7 @@ from utils.geo import load_geoid_layer, resolve_clicked_gid
 from utils.forecast import precompute_base_intensity, aggregate_fast, prob_ge_k
 from utils.patrol import allocate_patrols
 from utils.ui import SMALL_UI_CSS, render_result_card, build_map_fast, render_kpi_row
+from utils.hotspots import temp_hotspot_scores
 
 # Isı matrisi: ayrı modül varsa oradan, yoksa ui'dan
 try:
@@ -86,6 +87,20 @@ engine = st.sidebar.radio("Harita motoru", ["Folium", "pydeck"], index=0, horizo
 st.sidebar.subheader("Harita katmanları")
 show_poi = st.sidebar.checkbox("POI overlay", value=False)
 show_transit = st.sidebar.checkbox("Toplu taşıma overlay", value=False)
+# 🔥 Hotspot katmanları + kategori
+show_hotspot = st.sidebar.checkbox("Kalıcı Hotspot katmanı", value=True)
+show_temp_hotspot = st.sidebar.checkbox("Geçici Hotspot katmanı", value=True)
+
+hotspot_cat = st.sidebar.selectbox(
+    "Hotspot kategorisi",
+    options=["(Tüm suçlar)"] + CATEGORIES,
+    index=0,
+    help="Kalıcı/Geçici hotspot katmanları bu kategoriye göre gösterilir."
+)
+
+# (İsteğe bağlı) Gün içi saat filtresi sadece GEÇİCİ hotspot için
+use_hot_hours = st.sidebar.checkbox("Geçici hotspot için gün içi saat filtresi", value=False)
+hot_hours_rng = st.sidebar.slider("Saat aralığı (hotspot)", 0, 24, (0, 24), disabled=not use_hot_hours)
 
 # Ufuk seçimi
 ufuk = st.sidebar.radio("Zaman Aralığı (şimdiden)", options=["24s", "48s", "7g"], index=0, horizontal=True)
@@ -151,21 +166,54 @@ if sekme == "Operasyon":
             )
 
             st.session_state.update({
-                "agg": agg, "patrol": None, "start_iso": start_iso, "horizon_h": horizon_h
+                "agg": agg,
+                "patrol": None,
+                "start_iso": start_iso,
+                "horizon_h": horizon_h,
+                "events": events_df,  # 🔹 geçici hotspot için son olaylara ihtiyaç var
             })
 
         agg = st.session_state["agg"]
+
+        events_all = st.session_state.get("events")
+        lookback_h = int(np.clip(2 * st.session_state.get("horizon_h", 24), 24, 72))
         
+        ev_recent_df = None
+        if isinstance(events_all, pd.DataFrame) and not events_all.empty:
+            ev_recent_df = events_all.copy()
+            # zaman filtresi
+            ev_recent_df["ts"] = pd.to_datetime(ev_recent_df.get("ts") or ev_recent_df.get("timestamp"), utc=True, errors="coerce")
+            if "ts" in ev_recent_df.columns:
+                ev_recent_df = ev_recent_df[ev_recent_df["ts"] >= (pd.Timestamp.utcnow() - pd.Timedelta(hours=lookback_h))]
+            # kategori filtresi (eğer veri ‘type’ içeriyorsa)
+            if hotspot_cat != "(Tüm suçlar)" and "type" in ev_recent_df.columns:
+                ev_recent_df = ev_recent_df[ev_recent_df["type"] == hotspot_cat]
+            # gün içi saat filtresi
+            if use_hot_hours and "ts" in ev_recent_df.columns:
+                h1, h2 = hot_hours_rng[0], (hot_hours_rng[1] - 1) % 24
+                ev_recent_df = ev_recent_df[ev_recent_df["ts"].dt.hour.between(h1, h2)]
+            # lon/lat isimlerini normalize et
+            if "latitude" not in ev_recent_df.columns and "lat" in ev_recent_df.columns:
+                ev_recent_df = ev_recent_df.rename(columns={"lat": "latitude"})
+            if "longitude" not in ev_recent_df.columns and "lon" in ev_recent_df.columns:
+                ev_recent_df = ev_recent_df.rename(columns={"lon": "longitude"})
+            ev_recent_df = ev_recent_df.dropna(subset=["latitude", "longitude"])
+            if not ev_recent_df.empty:
+                ev_recent_df["weight"] = 1.0
+
         if agg is not None:
             if engine == "Folium":
                 m = build_map_fast(
-                    df_agg, geo_features, geo_df,
-                    show_popups=True,
-                    show_poi=False, show_transit=False,
-                    show_hotspot=True,                 # kalıcı hotspot layer
-                    show_temp_hotspot=True,            # geçici hotspot layer
-                    temp_hotspot_points=ev_recent_df[["latitude","longitude","weight"]],
-                    selected_type="assault"            # ya da None/"all"
+                    agg, GEO_FEATURES, GEO_DF,
+                    show_popups=show_popups,
+                    patrol=st.session_state.get("patrol"),
+                    show_poi=show_poi,
+                    show_transit=show_transit,
+                    # 🔻 yeni parametreler
+                    show_hotspot=show_hotspot,
+                    show_temp_hotspot=show_temp_hotspot,
+                    temp_hotspot_points=(ev_recent_df[["latitude","longitude","weight"]] if isinstance(ev_recent_df, pd.DataFrame) and not ev_recent_df.empty else None),
+                    selected_type=(None if hotspot_cat == "(Tüm suçlar)" else hotspot_cat),
                 )
                 # Güvenlik: st_folium'a gerçekten folium.Map gidiyor mu?
                 import folium
@@ -278,6 +326,65 @@ if sekme == "Operasyon":
                     "95% Güven Aralığı: Aynı koşullar tekrarlansa, gerçek sayının ~%95 bu aralıkta kalması beklenir. "
                     "Hızlı hesap: λ ± 1.96·√λ (alt sınır 0'a kırpılır)."
                 )
+
+        # === İstatistikler (tarihsel) ===
+        st.subheader("İstatistikler (tarihsel)")
+        
+        # gerekli bayrak/parametreler için güvenli varsayılanlar
+        events_all = st.session_state.get("events")
+        try:
+            _show_hotspot_flag = show_hotspot
+        except NameError:
+            _show_hotspot_flag = True  # tanımlı değilse göster
+        try:
+            _hotspot_cat = hotspot_cat
+        except NameError:
+            _hotspot_cat = "(Tüm suçlar)"
+        try:
+            _use_hot_hours = use_hot_hours
+            _hot_hours_rng = hot_hours_rng
+        except NameError:
+            _use_hot_hours = False
+            _hot_hours_rng = (0, 24)
+        
+        if _show_hotspot_flag and isinstance(events_all, pd.DataFrame) and not events_all.empty:
+            _ev = events_all.copy()
+        
+            # kategori filtresi (varsa)
+            if _hotspot_cat != "(Tüm suçlar)" and "type" in _ev.columns:
+                _ev = _ev[_ev["type"] == _hotspot_cat]
+        
+            # zaman sütununu normalize et (ts veya timestamp)
+            ts_col = "ts" if "ts" in _ev.columns else ("timestamp" if "timestamp" in _ev.columns else None)
+            if ts_col is None:
+                st.info("Etkinlik veri setinde zaman sütunu bulunamadı (ts/timestamp).")
+            else:
+                _ev["ts_norm"] = pd.to_datetime(_ev[ts_col], utc=True, errors="coerce")
+                _ev = _ev.dropna(subset=["ts_norm"])
+        
+                # gün içi saat filtresi (isteğe bağlı)
+                if _use_hot_hours:
+                    h1, h2 = _hot_hours_rng[0], (_hot_hours_rng[1] - 1) % 24  # [h1, h2)
+                    _ev = _ev[_ev["ts_norm"].dt.hour.between(h1, h2)]
+        
+                if _ev.empty:
+                    st.info("Filtrelerden sonra gösterilecek kayıt kalmadı.")
+                else:
+                    # Saatlik
+                    hourly = _ev.groupby(_ev["ts_norm"].dt.hour).size().reindex(range(24), fill_value=0)
+                    st.bar_chart(hourly.rename("Saatlik sayım"))
+        
+                    # Günlere göre
+                    dow = _ev.groupby(_ev["ts_norm"].dt.dayofweek).size().reindex(range(7), fill_value=0)
+                    dow.index = ["Pzt","Sal","Çar","Per","Cum","Cmt","Paz"]
+                    st.bar_chart(dow.rename("Günlere göre"))
+        
+                    # Aylara göre
+                    mon = _ev.groupby(_ev["ts_norm"].dt.month).size().reindex(range(1, 13), fill_value=0)
+                    mon.index = ["Oca","Şub","Mar","Nis","May","Haz","Tem","Ağu","Eyl","Eki","Kas","Ara"]
+                    st.bar_chart(mon.rename("Aylara göre"))
+        else:
+            st.caption("Kalıcı Hotspot açıkken ve veri mevcutsa tarihsel istatistikler burada gösterilir.")
 
         st.subheader("Devriye özeti")
         if st.session_state.get("agg") is not None and btn_patrol:
