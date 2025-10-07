@@ -17,63 +17,11 @@ try:
 except Exception:
     KEY_COL = "geoid"  # yoksa varsayılan
 
+# 🔹 Normalize fonksiyonunu utils'ten alıyoruz
+from utils.reports import normalize_events_ts
+
 # =============== Yardımcılar ===============
 
-def _normalize_ts(df: pd.DataFrame) -> pd.DataFrame:
-    """Olay verisinde zaman sütununu esnekçe bulur ve UTC'ye çevirir."""
-    if df is None or not isinstance(df, pd.DataFrame) or df.empty:
-        return pd.DataFrame()
-
-    # Kolon adlarını normalize et (küçük harf, strip)
-    cols_map = {c: c.strip() for c in df.columns}
-    df = df.rename(columns=cols_map)
-    lower_cols = {c.lower(): c for c in df.columns}
-
-    # Yaygın aday isimler
-    candidates = [
-        "ts", "timestamp", "datetime", "date_time", "date",
-        "reported_at", "occurred_at", "time"
-    ]
-
-    ts_col = None
-    for name in candidates:
-        if name in lower_cols:
-            ts_col = lower_cols[name]
-            break
-
-    # Ayrı 'date' + 'time' kolonu varsa birleştir
-    if ts_col is None and ("date" in lower_cols and "time" in lower_cols):
-        c_date = lower_cols["date"]
-        c_time = lower_cols["time"]
-        tmp = df[[c_date, c_time]].astype(str).agg(" ".join, axis=1)
-        ts = pd.to_datetime(tmp, utc=True, errors="coerce")
-    elif ts_col is None:
-        # Hiçbiri yok → boş dön
-        return pd.DataFrame()
-    else:
-        s = df[ts_col]
-
-        # Epoch tespit: tamamı sayısal ise ms/s dene
-        if np.issubdtype(s.dtype, np.number):
-            # Heuristik: büyük değerler genelde ms
-            # (1e12 üstü ms kabul edelim)
-            unit = "ms" if (pd.Series(s).dropna().astype(float).median() > 1e12) else "s"
-            ts = pd.to_datetime(s, unit=unit, utc=True, errors="coerce")
-        else:
-            # String → strip ve parse
-            ts = pd.to_datetime(s.astype(str).str.strip(), utc=True, errors="coerce")
-
-    out = df.copy()
-    out["ts"] = ts
-    out = out.dropna(subset=["ts"])
-    if out.empty:
-        return pd.DataFrame()
-
-    out["hour"] = out["ts"].dt.hour
-    out["dow"]  = out["ts"].dt.dayofweek
-    out["date"] = out["ts"].dt.date
-    return out
-    
 def _geoid_filter_ui(ev: pd.DataFrame) -> pd.DataFrame:
     """Kolluk için anlaşılır alan seçimi: şehir geneli / tek / çoklu GEOID."""
     st.subheader("Bölge Seçimi", anchor=False)
@@ -97,6 +45,7 @@ def _date_range_ui(ev: pd.DataFrame) -> pd.DataFrame:
         return ev
     tmin, tmax = ev["ts"].min().date(), ev["ts"].max().date()
     d1, d2 = st.date_input("Tarih aralığı", value=(tmin, tmax))
+    # st.date_input tuple döndürür → date'e kıyasla filtrele
     return ev[(ev["ts"].dt.date >= d1) & (ev["ts"].dt.date <= d2)]
 
 def _category_filter_ui(ev: pd.DataFrame) -> pd.DataFrame:
@@ -104,6 +53,8 @@ def _category_filter_ui(ev: pd.DataFrame) -> pd.DataFrame:
     if not cat_col:
         return ev
     cats = sorted(ev[cat_col].dropna().astype(str).unique().tolist())
+    if not cats:
+        return ev
     sel  = st.multiselect("Suç türü", cats, default=cats)
     if sel:
         return ev[ev[cat_col].isin(sel)]
@@ -117,7 +68,6 @@ def _kpi_tiles(ev: pd.DataFrame, agg: pd.DataFrame | None):
         uniq_geo = ev[KEY_COL].nunique() if KEY_COL in ev.columns else np.nan
         st.metric("Kayıtlı GEOID", f"{uniq_geo if not np.isnan(uniq_geo) else '—'}")
     with c3:
-        # Son 7 gün
         last7 = ev[ev["ts"] >= (pd.Timestamp.utcnow() - pd.Timedelta(days=7))]
         st.metric("Son 7 gün", f"{len(last7):,}")
     with c4:
@@ -256,11 +206,10 @@ def render_reports(events_df: pd.DataFrame | None,
     """
     st.header("Suç Tahmin Raporu")
 
-    # 1) Girdi kontrol & normalize
-    ev = _normalize_ts(events_df)
+    # 1) Girdi kontrol & normalize (🔹 utils.reports.normalize_events_ts)
+    ev = normalize_events_ts(events_df, key_col=KEY_COL) if isinstance(events_df, pd.DataFrame) else pd.DataFrame()
     if ev.empty:
         st.warning("Olay veri seti yok veya zaman sütunu parse edilemedi.")
-        # Teşhis: kolonları ve ilk satırları göster
         if isinstance(events_df, pd.DataFrame):
             st.caption("Mevcut kolonlar:")
             st.code(", ".join(map(str, events_df.columns)))
