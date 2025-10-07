@@ -353,26 +353,30 @@ def build_map_fast(
         }
 
     # --- Güvenli tooltip/popup (alanlar yoksa düşmesin)
-    tooltip = None
-    popup = None
+    gj_kwargs = {"style_function": style_fn}
     if show_popups:
         try:
-            tooltip = folium.GeoJsonTooltip(
+            tt = folium.features.GeoJsonTooltip(
                 fields=["id", "tier", "expected"],
                 aliases=["GEOID", "Öncelik", "E[olay]"],
-                localize=True,
-                sticky=False,
+                localize=True, sticky=False
             )
+            gj_kwargs["tooltip"] = tt
         except Exception:
-            tooltip = None
+            pass
         try:
-            popup = folium.GeoJsonPopup(
+            pp = folium.features.GeoJsonPopup(
                 fields=["popup_html"], labels=False, parse_html=False, max_width=280
             )
+            gj_kwargs["popup"] = pp
         except Exception:
-            popup = None
-
-    folium.GeoJson(fc, style_function=style_fn, tooltip=tooltip, popup=popup).add_to(m)
+            pass
+    
+    try:
+        folium.GeoJson(fc, **gj_kwargs).add_to(m)
+    except Exception:
+        # en azından tabaka çizilsin
+        folium.GeoJson(fc, style_function=style_fn).add_to(m)
 
     # ---------- POI / Transit overlay'leri ----------
     def _read_first_existing_csv(paths: list[str]) -> pd.DataFrame | None:
