@@ -311,7 +311,11 @@ if sekme == "Operasyon":
                         show_poi=show_poi,
                         show_transit=show_transit,
                         patrol=st.session_state.get("patrol"),
+                        show_hotspot=show_hotspot,
+                        show_temp_hotspot=show_temp_hotspot,
+                        temp_hotspot_points=temp_points,
                     )
+                    st.pydeck_chart(deck)
                     st.pydeck_chart(deck)
                     # Not: pydeck tarafında tıklama yakalama ayrı yapılır.
                     ret = None
