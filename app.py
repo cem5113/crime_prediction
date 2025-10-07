@@ -205,23 +205,19 @@ if sekme == "Operasyon":
             if engine == "Folium":
                 m = build_map_fast(
                     df_agg=agg,
-                    geo_features=GEO_FEATURES,     # ✅ doğru isim
+                    geo_features=GEO_FEATURES,
                     geo_df=GEO_DF,
                     show_popups=show_popups,
                     patrol=st.session_state.get("patrol"),
                     show_poi=show_poi,
                     show_transit=show_transit,
                 
-                    # Hotspot katmanları
-                    show_hotspot=True,             # ✅ kalıcı hotspot’u aç
-                    perm_hotspot_mode="heat",      # “ısı” modu (#4. ekran gibi)
+                    show_hotspot=True,                 # kalıcı hotspot
+                    perm_hotspot_mode="heat",          # ısı modu
                 
-                    # Geçici hotspot istiyorsanız (opsiyonel):
-                    # show_temp_hotspot=True,
-                    # temp_hotspot_points=ev_recent[["latitude","longitude","weight"]] if not ev_recent.empty else None,
-                
-                    # Kategoriye duyarlı göstermek istiyorsanız (opsiyonel):
-                    # selected_type=sel_type if sel_type not in (None, "all", "Tüm suçlar") else None,
+                    show_temp_hotspot=True,            # ✅ geçici hotspot’u aç
+                    temp_hotspot_points=ev_recent[["latitude","longitude","weight"]] if not ev_recent.empty else None,
+                    # selected_type=sel_type if sel_type not in (None, "all", "Tüm suçlar") else None,  # (opsiyonel)
                 )
 
                 # Güvenlik: st_folium'a gerçekten folium.Map gidiyor mu?
