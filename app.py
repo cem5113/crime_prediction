@@ -167,12 +167,7 @@ hotspot_cat = st.sidebar.selectbox(
     index=0,
     help="Kalıcı/Geçici hotspot katmanları bu kategoriye göre gösterilir."
 )
-hotspot_cat = st.sidebar.selectbox(
-    "Hotspot kategorisi",
-    options=["(Tüm suçlar)"] + CATEGORIES,
-    index=0,
-    help="Kalıcı/Geçici hotspot katmanları bu kategoriye göre gösterilir."
-)
+
 use_hot_hours = st.sidebar.checkbox("Geçici hotspot için gün içi saat filtresi", value=False)
 hot_hours_rng = st.sidebar.slider("Saat aralığı (hotspot)", 0, 24, (0, 24), disabled=not use_hot_hours)
 
@@ -269,7 +264,12 @@ if sekme == "Operasyon":
                 st.session_state["agg_long"] = None
 
         agg = st.session_state["agg"]
-
+        
+        if isinstance(agg, pd.DataFrame):
+            df_agg_for_map = agg if show_risk_layer else agg.iloc[0:0]
+        else:
+            df_agg_for_map = None
+            
         events_all = st.session_state.get("events")
         lookback_h = int(np.clip(2 * st.session_state.get("horizon_h", 24), 24, 72))
         
@@ -309,20 +309,22 @@ if sekme == "Operasyon":
             temp_points["weight"] = ev_recent_df["weight"] if "weight" in ev_recent_df.columns else 1.0
         else:
             temp_points = pd.DataFrame(columns=["latitude", "longitude", "weight"])
-            temp_points_effective = temp_points if show_temp_hotspot else pd.DataFrame(columns=["latitude","longitude","weight"])
+        
+        # Katman kapalıysa boş gönder
+        temp_points_effective = temp_points if show_temp_hotspot else pd.DataFrame(columns=["latitude","longitude","weight"])
                 
         # ev_recent boşsa: üst risk hücrelerinden sentetik ısı üret (fallback)
-        if show_temp_hotspot and temp_points.empty and isinstance(df_agg_for_map, pd.DataFrame) and not df_agg_for_map.empty:
+        if show_temp_hotspot and temp_points_effective.empty and isinstance(df_agg_for_map, pd.DataFrame) and not df_agg_for_map.empty:
             topn = 80
             tmp = (
                 df_agg_for_map.nlargest(topn, "expected")
-                   .merge(GEO_DF[[KEY_COL, "centroid_lat", "centroid_lon"]], on=KEY_COL, how="left")
-                   .dropna(subset=["centroid_lat", "centroid_lon"])
+                    .merge(GEO_DF[[KEY_COL, "centroid_lat", "centroid_lon"]], on=KEY_COL, how="left")
+                    .dropna(subset=["centroid_lat", "centroid_lon"])
             )
-            temp_points = tmp.rename(columns={"centroid_lat": "latitude", "centroid_lon": "longitude"})[
+            temp_points_effective = tmp.rename(columns={"centroid_lat": "latitude", "centroid_lon": "longitude"})[
                 ["latitude", "longitude"]
             ]
-            temp_points["weight"] = tmp["expected"].clip(lower=0).astype(float)
+            temp_points_effective["weight"] = tmp["expected"].clip(lower=0).astype(float)
         
         # küçük sayaç (gösterge)
         st.sidebar.caption(f"Geçici hotspot noktası: {len(temp_points)}")
@@ -405,13 +407,14 @@ if sekme == "Operasyon":
                     ret = None
                 else:
                     deck = build_map_fast_deck(
-                        agg, GEO_DF,
-                        show_poi=show_poi,
-                        show_transit=show_transit,
+                        df_agg_for_map if isinstance(df_agg_for_map, pd.DataFrame) else agg,  # elde ne varsa
+                        GEO_DF,
+                        show_poi=False,
+                        show_transit=False,
                         patrol=st.session_state.get("patrol"),
-                        show_hotspot=show_hotspot,
+                        show_hotspot=show_perm_hotspot,
                         show_temp_hotspot=show_temp_hotspot,
-                        temp_hotspot_points=temp_points,
+                        temp_hotspot_points=temp_points_effective,
                     )
                     st.pydeck_chart(deck)
                     # Not: pydeck tarafında tıklama yakalama ayrı yapılır.
