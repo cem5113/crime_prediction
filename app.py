@@ -129,9 +129,18 @@ use_hot_hours = st.sidebar.checkbox("Geçici hotspot için gün içi saat filtre
 hot_hours_rng = st.sidebar.slider("Saat aralığı (hotspot)", 0, 24, (0, 24), disabled=not use_hot_hours)
 
 # Zaman ufku
-ufuk = st.sidebar.radio("Zaman Aralığı (şimdiden)", options=["24s", "48s", "7g"], index=0, horizontal=True)
+now_local = (datetime.utcnow() + timedelta(hours=SF_TZ_OFFSET)).replace(minute=0, second=0, microsecond=0)
+ufuk = st.sidebar.radio(
+    f"Zaman aralığı (başlangıç: {now_local:%Y-%m-%d %H:%M})",
+    options=["24s", "48s", "7g"], index=0, horizontal=True
+)
 max_h, step = (24, 1) if ufuk == "24s" else (48, 3) if ufuk == "48s" else (7*24, 24)
 start_h, end_h = st.sidebar.slider("Saat filtresi", min_value=0, max_value=max_h, value=(0, max_h), step=step)
+start_dt_label = now_local + timedelta(hours=start_h)
+end_dt_label   = now_local + timedelta(hours=end_h)
+st.sidebar.caption(
+    f"Seçilen aralık: {start_dt_label:%Y-%m-%d %H:%M} → {end_dt_label:%Y-%m-%d %H:%M}  ( {end_h - start_h} saat )"
+)
 
 # Kategori filtresi (tahmin motoru için)
 sel_categories = st.sidebar.multiselect("Suç Tahmini için Kategori", ["(Hepsi)"] + CATEGORIES, default=[])
