@@ -374,12 +374,14 @@ def build_map_fast(
             gj_kwargs["popup"] = pp
         except Exception:
             pass
-
+    
+    # ✅ İsmi olan bir katmana koy (LayerControl’da “macro_element_div_1” yerine “Risk Hücreleri” görünsün)
+    fg_cells = folium.FeatureGroup(name="Risk Hücreleri", show=True)
     try:
-        folium.GeoJson(fc, **gj_kwargs).add_to(m)
+        folium.GeoJson(fc, **gj_kwargs).add_to(fg_cells)
     except Exception:
-        # tooltip/popup başarısızsa en azından çiz
-        folium.GeoJson(fc, style_function=style_fn).add_to(m)
+        folium.GeoJson(fc, style_function=style_fn).add_to(fg_cells)
+    fg_cells.add_to(m)
 
     # ---------- POI / Transit overlay'leri ----------
     def _read_first_existing_csv(paths: list[str]) -> pd.DataFrame | None:
@@ -490,7 +492,22 @@ def build_map_fast(
                 fg_tr.add_to(m)
         except Exception:
             pass
-    
+
+    # === Geçici hotspot katmanı (son T saat ısı haritası) ===
+    if show_temp_hotspot and temp_hotspot_points is not None and not temp_hotspot_points.empty:
+        try:
+            cols = {c.lower(): c for c in temp_hotspot_points.columns}
+            lat = cols.get("latitude") or cols.get("lat")
+            lon = cols.get("longitude") or cols.get("lon")
+            w   = cols.get("weight")
+            if lat and lon:
+                pts = temp_hotspot_points[[lat, lon] + ([w] if w else [])].values.tolist()
+                fg_temp = folium.FeatureGroup(name="Geçici Hotspot", show=True)
+                HeatMap(pts, radius=16, blur=24, max_zoom=16).add_to(fg_temp)
+                fg_temp.add_to(m)
+        except Exception:
+            pass
+        
     # === Kalıcı hotspot katmanı (kategoriye duyarlı) ===
     if show_hotspot:
         try:
