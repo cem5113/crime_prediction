@@ -1,57 +1,52 @@
 # app.py  — SUTAM
 from __future__ import annotations
 
-import os, sys, time
+import os, time
 from datetime import datetime, timedelta
 import numpy as np
 import pandas as pd
 import streamlit as st
 from streamlit_folium import st_folium
 
-# ------------------------------------------------------------------
-# PATHS: components/ ve components/utils'i import yoluna ekle
-# ------------------------------------------------------------------
-PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
-COMP_DIR     = os.path.join(PROJECT_ROOT, "components")
-UTILS_DIR    = os.path.join(COMP_DIR, "utils")
-DATA_DIR     = os.path.join(COMP_DIR, "data")  # <-- sf_cells.geojson burada
+# ── Tek doğruluk kaynağı: constants
+from components.utils.constants import (
+    SF_TZ_OFFSET, KEY_COL,
+    MODEL_VERSION, MODEL_LAST_TRAIN,
+    DISPLAY_CATEGORIES,          # UI'de görünen kategori başlıkları (Title Case)
+    category_key_list,           # UI seçimini model anahtarlarına çevirir
+)
 
-for p in (PROJECT_ROOT, COMP_DIR, UTILS_DIR):
-    if p not in sys.path:
-        sys.path.insert(0, p)
+# ── Artefakt içe aktarma & kanonik veri üretimi
+from components.utils.loaders import import_latest_artifact, materialize_canonical
 
-# ------------------------------------------------------------------
-# IMPORTS (components/utils altından)
-# ------------------------------------------------------------------
-from geo import load_geoid_layer, resolve_clicked_gid                # components/utils/geo.py
-from hotspots import render_day_hour_heatmap                         # components/utils/hotspots.py (ısı matrisi burada ise)
-from constants import (SF_TZ_OFFSET, KEY_COL, MODEL_VERSION, MODEL_LAST_TRAIN, CATEGORIES)
+# ── Geo & hotspot yardımcıları
+from components.utils.geo import load_geoid_layer, resolve_clicked_gid
+from components.utils.hotspots import render_day_hour_heatmap
 
-# forecast & patrol utility fonksiyonları senin utils tarafındaysa:
-from forecast import precompute_base_intensity, aggregate_fast, prob_ge_k  # components/utils/forecast.py (varsa)
-from patrol import allocate_patrols                                        # components/utils/patrol.py   (varsa)
+# ── Tahmin & devriye yardımcıları
+from components.utils.forecast import precompute_base_intensity, aggregate_fast, prob_ge_k
+from components.utils.patrol import allocate_patrols
 
-# UI yardımcıları: eski utils/ui.py -> layout_utils.py
-from layout_utils import SMALL_UI_CSS, render_result_card, build_map_fast, render_kpi_row
+# ── UI yardımcıları
+from components.utils.layout_utils import SMALL_UI_CSS, render_result_card, build_map_fast, render_kpi_row
 
-# Pydeck opsiyonel
+# ── Pydeck (opsiyonel)
 try:
-    from deck import build_map_fast_deck  # components/utils/deck.py
+    from components.utils.deck import build_map_fast_deck
 except Exception:
     build_map_fast_deck = None
 
-# Son güncelleme rozeti
-from last_update import show_last_update_badge  # components/last_update.py
+# ── Son güncelleme rozeti
+from components.last_update import show_last_update_badge
 
-# Raporlar (opsiyonel)
+# ── Raporlar sekmesi (varsa)
 try:
-    from report_view import render_reports      # components/report_view.py (varsa)
+    from components.ui.reports import render_reports
     HAS_REPORTS = True
 except Exception:
     HAS_REPORTS = False
     def render_reports(**kwargs):
-        st.info("Raporlar modülü bulunamadı (components/report_view.py).")
-
+        st.info("Raporlar modülü bulunamadı (components/ui/reports.py).")
 # ------------------------------------------------------------------
 # Fallback: olay yükleyici (raporlar yoksa da çalışsın)
 # ------------------------------------------------------------------
@@ -122,9 +117,7 @@ BASE_INT = precompute_base_intensity(GEO_DF)
 def now_sf_iso() -> str:
     return (datetime.utcnow() + timedelta(hours=SF_TZ_OFFSET)).isoformat(timespec="seconds")
 
-# ------------------------------------------------------------------
-# Sidebar
-# ------------------------------------------------------------------
+# ---------------- Sidebar ----------------
 st.sidebar.markdown("### Görünüm")
 sekme_options = ["Operasyon"]
 if HAS_REPORTS:
@@ -132,29 +125,70 @@ if HAS_REPORTS:
 sekme = st.sidebar.radio("", options=sekme_options, index=0, horizontal=True)
 st.sidebar.divider()
 
-st.sidebar.header("Devriye Parametreleri")
+# 📦 Artefakt içe aktar & yenile
+if st.sidebar.button("📦 Artefaktı içe aktar & yenile", use_container_width=True):
+    try:
+        out = import_latest_artifact(save_raw=False)
+        paths = materialize_canonical(out["sf"], out["fr"])
+        # önemli: grid dosyası artefaktan güncellenmiş olabilir → tüm cache’i temizle
+        st.cache_data.clear()
+        st.success("Artefakt içe aktarıldı, canonical veri üretildi ve önbellek temizlendi.")
+        st.caption(f"Üretilen dosyalar: {paths}")
+        # küçük bir ipucu: kullanıcıya üstte 'Tahmin et' çalıştırmasını hatırlat
+        st.toast("Hazır! Yeni veriyle haritayı güncellemek için ‘Tahmin et’ tuşuna basın.", icon="✅")
+    except Exception as e:
+        st.error(f"İçe aktarma/kanonikleştirme hatası: {e}")
+
+# Harita motoru
+st.sidebar.header("Görselleştirme")
 engine = st.sidebar.radio("Harita motoru", ["Folium", "pydeck"], index=0, horizontal=True)
 
+# Harita katmanları
 st.sidebar.subheader("Harita katmanları")
 show_poi      = st.sidebar.checkbox("POI overlay", value=False)
 show_transit  = st.sidebar.checkbox("Toplu taşıma overlay", value=False)
 show_popups   = st.sidebar.checkbox("Hücre popup'larını (en olası 3 suç) göster", value=True)
 
+# Grafik kapsamı
 scope = st.sidebar.radio("Grafik kapsamı", ["Tüm şehir", "Seçili hücre"], index=0)
 
+# Hotspot ayarları
 show_hotspot        = True
 show_temp_hotspot   = True
-hotspot_cat = st.sidebar.selectbox("Hotspot kategorisi", options=["(Tüm suçlar)"] + CATEGORIES, index=0)
+hotspot_cat = st.sidebar.selectbox(
+    "Hotspot kategorisi",
+    options=["(Tüm suçlar)"] + DISPLAY_CATEGORIES,  # ← Title Case liste
+    index=0
+)
 use_hot_hours = st.sidebar.checkbox("Geçici hotspot için gün içi saat filtresi", value=False)
 hot_hours_rng = st.sidebar.slider("Saat aralığı (hotspot)", 0, 24, (0, 24), disabled=not use_hot_hours)
 
+# Zaman ufku
 ufuk = st.sidebar.radio("Zaman Aralığı (şimdiden)", options=["24s", "48s", "7g"], index=0, horizontal=True)
 max_h, step = (24, 1) if ufuk == "24s" else (48, 3) if ufuk == "48s" else (7*24, 24)
 start_h, end_h = st.sidebar.slider("Saat filtresi", min_value=0, max_value=max_h, value=(0, max_h), step=step)
 
-sel_categories = st.sidebar.multiselect("Kategori", ["(Hepsi)"] + CATEGORIES, default=[])
-filters = {"cats": CATEGORIES if sel_categories and "(Hepsi)" in sel_categories else (sel_categories or None)}
+# 🎯 Kategori filtresi (UI → model anahtarları)
+sel_display_cats = st.sidebar.multiselect(
+    "Kategori",
+    ["(Hepsi)"] + DISPLAY_CATEGORIES,
+    default=[]
+)
 
+if sel_display_cats and "(Hepsi)" in sel_display_cats:
+    # Hepsi seçildiyse tüm anahtarları topla
+    selected_keys = []
+    for disp in DISPLAY_CATEGORIES:
+        selected_keys.extend(category_key_list(disp))
+else:
+    selected_keys = []
+    for disp in sel_display_cats:
+        selected_keys.extend(category_key_list(disp))
+
+# Tahmin/aggregate fonksiyonlarına geçecek filtre nesnesi
+filters = {"cats": (selected_keys or None)}
+
+# Analist görünümü
 show_advanced = st.sidebar.checkbox("Gelişmiş metrikleri göster (analist)", value=False)
 
 st.sidebar.divider()
@@ -164,8 +198,8 @@ duty_minutes = st.sidebar.number_input("Devriye görev süresi (dk)",   min_valu
 cell_minutes = st.sidebar.number_input("Hücre başına ort. kontrol (dk)", min_value=2, max_value=30, value=6, step=1)
 
 colA, colB = st.sidebar.columns(2)
-btn_predict = colA.button("Tahmin et")
-btn_patrol  = colB.button("Devriye öner")
+btn_predict = colA.button("Tahmin et", use_container_width=True)
+btn_patrol  = colB.button("Devriye öner", use_container_width=True)
 
 # ------------------------------------------------------------------
 # State init
