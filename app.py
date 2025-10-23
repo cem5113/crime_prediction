@@ -53,6 +53,9 @@ except Exception:
 # ------------------------------------------------------------------
 # Fallback: olay yükleyici — Parquet öncelikli
 # ------------------------------------------------------------------
+# ------------------------------------------------------------------
+# Fallback: olay yükleyici (raporlar yoksa da çalışsın) — Parquet öncelikli
+# ------------------------------------------------------------------
 def load_events(path: str) -> pd.DataFrame:
     import os
     import pandas as pd
@@ -61,6 +64,7 @@ def load_events(path: str) -> pd.DataFrame:
         if p.lower().endswith(".parquet") or os.path.splitext(p)[1].lower() == ".parquet":
             df = pd.read_parquet(p)
         else:
+            # hem parquet hem csv dene (önce parquet)
             pq = os.path.splitext(p)[0] + ".parquet"
             if os.path.exists(pq):
                 df = pd.read_parquet(pq)
@@ -70,6 +74,7 @@ def load_events(path: str) -> pd.DataFrame:
         return pd.DataFrame()
 
     lower = {str(c).strip().lower(): c for c in df.columns}
+    # ts kolonunu normalize et
     ts_col = None
     for cand in ["ts", "timestamp", "datetime", "date_time", "reported_at", "occurred_at", "time", "date"]:
         if cand in lower:
@@ -81,12 +86,28 @@ def load_events(path: str) -> pd.DataFrame:
         df["ts"] = pd.NaT
         df = df.dropna(subset=["ts"])
 
+    # koordinat adlarını normalize et
     if "latitude" not in df.columns and "lat" in lower:
         df = df.rename(columns={lower["lat"]: "latitude"})
     if "longitude" not in df.columns and "lon" in lower:
         df = df.rename(columns={lower["lon"]: "longitude"})
     return df
 
+# Olay verisi (opsiyonel)
+events_parquet_path = os.path.join(DATA_DIR, "events.parquet")  # ✅ parquet bekler, csv fallback
+try:
+    events_df = load_events(events_parquet_path)
+    st.session_state["events_df"] = events_df if isinstance(events_df, pd.DataFrame) else None
+    st.session_state["events"] = st.session_state["events_df"]
+    data_upto_val = (
+        pd.to_datetime(events_df["ts"]).max().date().isoformat()
+        if isinstance(events_df, pd.DataFrame) and not events_df.empty and "ts" in events_df.columns
+        else None
+    )
+except Exception:
+    st.session_state["events_df"] = None
+    st.session_state["events"] = None
+    data_upto_val = None
 
 # ------------------------------------------------------------------
 # Streamlit temel ayarlar
