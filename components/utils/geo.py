@@ -6,7 +6,7 @@ import json
 import numpy as np
 import pandas as pd
 
-from utils.constants import KEY_COL
+from .constants import KEY_COL
 
 def polygon_centroid(lonlat_loop):
     x, y = zip(*lonlat_loop)
