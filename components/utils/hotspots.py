@@ -8,6 +8,10 @@ from typing import Optional, Tuple
 import numpy as np
 import pandas as pd
 import streamlit as st
+
+import matplotlib
+matplotlib.use("Agg")  # <-- headless backend
+
 import matplotlib.pyplot as plt
 
 # Paket içi sabitler (göreli import)
