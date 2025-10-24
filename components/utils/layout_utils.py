@@ -12,12 +12,12 @@ import streamlit as st
 
 # 🔒 constants (safe import; dairesel importu önler)
 try:
-    from utils.constants import KEY_COL, CRIME_TYPES
+    from .constants import KEY_COL, CRIME_TYPES
 except Exception:
     KEY_COL = "GEOID"
     CRIME_TYPES = []
 
-from utils.forecast import pois_pi90
+from .forecast import pois_pi90
 
 __all__ = [
     "SMALL_UI_CSS",
