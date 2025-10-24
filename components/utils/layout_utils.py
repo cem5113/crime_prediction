@@ -1,4 +1,4 @@
-# utils/layout_utils.py
+# components/utils/layout_utils.py
 from __future__ import annotations
 import math, json
 from datetime import datetime, timedelta
@@ -17,7 +17,17 @@ except Exception:
     KEY_COL = "GEOID"
     CRIME_TYPES = []
 
-from .forecast import pois_pi90
+# ←←← BU BLOĞU EKLE (doğrudan importun yerine)
+try:
+    from .forecast import pois_pi90
+except Exception:
+    # SciPy/MATLAB yoksa güvenli 90p yaklaşık hesap
+    def pois_pi90(lmbd: float) -> tuple[int, int]:
+        lam = max(float(lmbd), 0.0)
+        hi = int(max(0.0, lam + 1.2816 * math.sqrt(lam)))  # ~90p
+        lo = 0
+        return lo, hi
+# →→→
 
 __all__ = [
     "SMALL_UI_CSS",
