@@ -38,7 +38,7 @@ except Exception:
     build_map_fast_deck = None
 
 # ── Son güncelleme rozeti
-from components.last_update import show_last_update_badge
+from components.utils.last_update import show_last_update_badge
 
 # ── Raporlar sekmesi (varsa)
 try:
