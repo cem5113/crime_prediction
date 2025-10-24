@@ -23,6 +23,7 @@ from components.utils.loaders import import_latest_artifact, materialize_canonic
 # ── Geo & hotspot yardımcıları
 from components.utils.geo import load_geoid_layer, resolve_clicked_gid
 from components.utils.hotspots import render_day_hour_heatmap
+from components.utils.constants import GRID_FILE
 
 # ── Tahmin & devriye yardımcıları
 from components.utils.forecast import precompute_base_intensity, aggregate_fast, prob_ge_k
@@ -49,6 +50,24 @@ except Exception:
     def render_reports(**kwargs):
         st.info("Raporlar modülü bulunamadı (components/ui/reports.py).")
 
+geojson_candidates = [
+    # secrets ile gelmiş olabilir
+    os.environ.get("GRID_FILE"),
+    # constants içindeki canonical (Path objesi olabilir)
+    str(GRID_FILE) if "GRID_FILE" in dir() and GRID_FILE else None,
+    # repo içi klasik konumlar
+    os.path.join("components", "data", "sf_cells.geojson"),
+    os.path.join("data", "sf_cells.geojson"),
+]
+
+GEO_DF, GEO_FEATURES, GEO_DEBUG = load_geoid_layer_any(geojson_candidates, return_debug=True)
+
+if GEO_DF.empty:
+    import streamlit as st
+    st.error("GEOJSON yüklenemedi veya satır yok.")
+    st.caption("Denediğim yollar ve teşhis:")
+    st.code("\n".join([d for d in GEO_DEBUG if d]), language="text")
+    st.stop()
 
 # ------------------------------------------------------------------
 # Fallback: olay yükleyici — Parquet öncelikli
