@@ -3,7 +3,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 from typing import Dict
-from utils.constants import KEY_COL
+from .constants import KEY_COL
 
 def kmeans_like(coords: np.ndarray, weights: np.ndarray, k: int, iters: int = 20):
     n = len(coords); k = min(k, n)
