@@ -4,7 +4,7 @@ import pydeck as pdk
 import pandas as pd
 
 try:
-    from utils.constants import KEY_COL
+    from .constants import KEY_COL
 except Exception:
     KEY_COL = "GEOID"
 
