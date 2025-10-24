@@ -5,7 +5,7 @@ from datetime import datetime, timedelta
 import numpy as np
 import pandas as pd
 from typing import Optional, Dict, Any, Iterable
-from utils.constants import CRIME_TYPES, KEY_COL, CATEGORY_TO_KEYS
+from .constants import CRIME_TYPES, KEY_COL, CATEGORY_TO_KEYS
 
 # ---- küçük yardımcılar ----
 def _haversine_m(lat1, lon1, lat2, lon2) -> float:
