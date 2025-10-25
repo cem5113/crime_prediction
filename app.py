@@ -197,8 +197,45 @@ show_last_update_badge(
 # ------------------------------------------------------------------
 # GEO katmanı
 # ------------------------------------------------------------------
-geojson_path = os.path.join(DATA_DIR, "sf_cells.geojson")
-GEO_DF, GEO_FEATURES = load_geoid_layer(geojson_path)
+# --- GEO katmanı: aday yolları deneyip debug’la yükle ---
+from components.utils.geo import load_geoid_layer_any
+from components.utils.constants import GRID_FILE
+import os
+
+def _to_str(p):
+    if p is None:
+        return None
+    try:
+        s = str(p).strip()
+        return s if s else None
+    except Exception:
+        return None
+
+_candidates_raw = [
+    os.environ.get("GRID_FILE"),                                   # secrets/env
+    _to_str(GRID_FILE) if "GRID_FILE" in globals() else None,      # constants’taki Path/str
+    os.path.join("components", "data", "sf_cells.geojson"),        # repo içi 1
+    os.path.join("data", "sf_cells.geojson"),                      # repo içi 2
+    "sf_cells.geojson",                                            # çıplak isim
+]
+
+_seen, geojson_candidates = set(), []
+for c in _candidates_raw:
+    c = _to_str(c)
+    if c and c not in _seen:
+        _seen.add(c)
+        geojson_candidates.append(c)
+
+GEO_DF, GEO_FEATURES, GEO_DEBUG = load_geoid_layer_any(
+    geojson_candidates, return_debug=True
+)
+
+if GEO_DF.empty:
+    st.error("GEOJSON yüklenemedi veya satır yok.")
+    st.caption("Denediğimiz yollar & teşhis:")
+    st.code("\n".join([str(d) for d in GEO_DEBUG if d]), language="text")
+    st.stop()
+
 if GEO_DF.empty:
     st.error("GEOJSON yüklenemedi veya satır yok.")
     st.stop()
