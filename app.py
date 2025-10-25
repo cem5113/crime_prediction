@@ -21,7 +21,11 @@ from components.utils.constants import (
 from components.utils.loaders import import_latest_artifact, materialize_canonical
 
 # ── Geo & hotspot yardımcıları
-from components.utils.geo import load_geoid_layer, resolve_clicked_gid
+from components.utils.geo import (
+    load_geoid_layer,
+    load_geoid_layer_any,   # ← BUNU EKLE
+    resolve_clicked_gid
+)
 from components.utils.hotspots import render_day_hour_heatmap
 from components.utils.constants import GRID_FILE
 
@@ -50,24 +54,57 @@ except Exception:
     def render_reports(**kwargs):
         st.info("Raporlar modülü bulunamadı (components/ui/reports.py).")
 
-geojson_candidates = [
-    # secrets ile gelmiş olabilir
-    os.environ.get("GRID_FILE"),
-    # constants içindeki canonical (Path objesi olabilir)
-    str(GRID_FILE) if "GRID_FILE" in dir() and GRID_FILE else None,
-    # repo içi klasik konumlar
+# --- GEO katmanı yükleme (esnek + teşhisli) ---
+from components.utils.geo import load_geoid_layer_any
+from components.utils.constants import GRID_FILE  # varsa Path olabilir
+import os
+
+def _coerce_path(p):
+    """None/boş/NaN değilse string'e çevirir; aksi halde None döner."""
+    if p is None:
+        return None
+    try:
+        # Path, str, vs.
+        s = str(p).strip()
+        return s if s else None
+    except Exception:
+        return None
+
+# Aday yolları topla (öncelik sırası yukarıdan aşağıya)
+_candidates_raw = [
+    os.environ.get("GRID_FILE"),                     # secrets ile gelebilir
+    _coerce_path(GRID_FILE) if "GRID_FILE" in globals() else None,  # constants içindeki canonical
     os.path.join("components", "data", "sf_cells.geojson"),
     os.path.join("data", "sf_cells.geojson"),
+    "sf_cells.geojson",                              # çıplak isim fallback
 ]
 
-GEO_DF, GEO_FEATURES, GEO_DEBUG = load_geoid_layer_any(geojson_candidates, return_debug=True)
+# None/boş olanları at + tekrarları kaldır (sıra korunur)
+_seen, geojson_candidates = set(), []
+for c in _candidates_raw:
+    c = _coerce_path(c)
+    if c and c not in _seen:
+        _seen.add(c)
+        geojson_candidates.append(c)
 
+# Yükle ve debug bilgisi hazırla
+try:
+    GEO_DF, GEO_FEATURES, GEO_DEBUG = load_geoid_layer_any(
+        geojson_candidates, return_debug=True
+    )
+except TypeError:
+    # Eski imzalı fonksiyonlar için geriye dönük uyum
+    GEO_DF, GEO_FEATURES = load_geoid_layer_any(geojson_candidates)
+    GEO_DEBUG = ["`return_debug` desteklenmiyor; yalın yükleme kullanıldı."]
+
+# Başarısızsa anlaşılır teşhis göster ve dur
 if GEO_DF.empty:
-    import streamlit as st
     st.error("GEOJSON yüklenemedi veya satır yok.")
-    st.caption("Denediğim yollar ve teşhis:")
-    st.code("\n".join([d for d in GEO_DEBUG if d]), language="text")
+    st.caption("Denediğimiz yollar ve teşhis:")
+    # boş satırları ele; uzun satırlar için code bloğu
+    st.code("\n".join([str(d) for d in GEO_DEBUG if d]), language="text")
     st.stop()
+
 
 # ------------------------------------------------------------------
 # Fallback: olay yükleyici — Parquet öncelikli
